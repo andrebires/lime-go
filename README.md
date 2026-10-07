@@ -1,619 +1,162 @@
+# LIME 2.0 for Go
 
-# LIME - A lightweight messaging library  
+An experimental, non-binary LIME 2.0 stack based on the
+[2026-10-07 v0.1 draft](docs/lime-2-v0.1-draft.md) and the
+[approved implementation profile](docs/adr/0001-lime2-profile.md).
+The wire remains readable JSON over WebSocket text messages (`lime` subprotocol).
 
-![Go](https://github.com/takenet/lime-go/workflows/Go/badge.svg?branch=master)
+This is a **breaking rewrite**. Import `github.com/andrebires/lime-go/v2`.
+The old factories, builders, channel hierarchy, TCP/in-process transports and
+legacy demos are removed. There is no automatic downgrade to LIME 1, session
+resume, or production storage. The profile is a concrete implementation of a
+review draft, not an official frozen LIME standard.
 
-LIME allows you to build scalable, real-time messaging applications using a JSON-based
-[open protocol](http://limeprotocol.org).
-It's **fully asynchronous** and supports persistent transports like TCP or Websockets.
+## Run the demo
 
-You can send and receive any type of document into the wire as long it can be represented as JSON or text (plain or
-encoded with base64) and it has a **MIME type** to allow the other party to handle it in the right way.
+Requires Go 1.25.5+. No npm install or frontend build is needed.
 
-The connected nodes can send receipts to the other parties to notify events about messages (for instance, a message was
-received or the content invalid or not supported).
-
-Besides that, there's a **REST capable** command interface with verbs (*get, set, and delete*) and resource identifiers
-(URIs) to allow rich messaging scenarios.
-You can use that to provide services like on-band account registration or instance-messaging resources, like presence or
-roster management.
-
-Finally, it has built-in support for authentication, transport encryption, and compression.
-
-## Getting started
-
------
-
-### Server
-
-For creating a server and start receiving connections, you should use the `lime.Server` type, which can be built using
-the `lime.NewServerBuilder()` function.
-
-At least one **transport listener** (TCP, WebSocket, or in-process) should be configured.
-You also should **register handlers** for processing the received envelopes.
-
-The example below shows how to create a simple TCP server that echoes every received message to its originator:
-
-```go
-
-package main
-
-import (
- "context"
- "github.com/takenet/lime-go"
- "log"
- "net"
- "os"
- "os/signal"
- "syscall"
-)
-
-func main() {
-    // Message handler that echoes all received messages to the originator
-    msgHandler := func(ctx context.Context, msg *lime.Message, s lime.Sender) error {
-        echoMsg := &lime.Message{}
-        echoMsg.SetContent(msg.Content).SetTo(msg.From)
-        return s.SendMessage(ctx, echoMsg)
-    }
-    
-    // Build a server, listening for TCP connections in the 55321 port
-    server := lime.NewServerBuilder().
-        MessagesHandlerFunc(msgHandler).
-        ListenTCP(&net.TCPAddr{Port: 55321}, &lime.TCPConfig{}).
-        Build()
-    
-    // Listen for the OS termination signals
-    sigs := make(chan os.Signal, 1)
-    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-    go func() {
-        <-sigs
-        if err := server.Close(); err != nil {
-            log.Printf("close: %v\n", err)
-        }
-    }()
-    
-    // Start listening (blocking call)
-    if err := server.ListenAndServe(); err != lime.ErrServerClosed {
-        log.Printf("listen: %v\n", err)
-    }
-}
+```sh
+go run ./examples/lime2-demo
 ```
 
-### Client
+Open **http://127.0.0.1:8080** in two or more tabs. Connect each client, refresh
+peers, choose a recipient or broadcast, and type. Characters arrive before you
+press **Finish / send**. Live text is append-only during a stream; finish before
+editing previous text. The wire viewer shows start/data/end and correlated receipts.
 
-On the client-side, you may use the `lime.Client` type, which can be built using the helper method `lime.NewClientBuilder`.
+The JSON button shows RFC 7396 recursive merging, array replacement, and null
+member deletion with a deliberate 750 ms interval. You can register the session
+alias `note`, mark completed messages read, retry whole unreceived messages,
+disconnect and establish a new session. The tests additionally cover default and
+non-default revisions, cumulative receipt/read gaps, failed entries, unsupported
+versions, spoofed identities, binary frames, overload and interrupted streams.
+
+Choose **Receipt scope: Session prefix** to send `received` watermarks across
+threads, or keep individual message receipts. Turn off **Automatic receipts**
+and use **Send received notifications** to inspect pending messages and retries.
+Choose **Read scope: Thread prefix**, enter the target **Thread**, and press
+**Mark completed messages read** to send a cumulative `consumed` watermark for
+that thread. Other threads remain outside that read notification. Cumulative
+progress uses delivery order and stops before unfinished streams; after finishing
+the stream, send receipts/read progress again. A session containing several
+original senders sends each origin its latest covered marker. Notification status
+and the wire viewer display the scope, exact message ID and revision.
+See [scoped notification browser evidence](docs/demo-scoped-notifications.jpg).
+
+Broadcast retry state remains pending until every original recipient acknowledges.
+The demo command `get /messages/delivery` with JSON resource `{"id":"m1","rev":1}`
+reports outstanding recipient nodes; `set` on the same resource retries their
+retained complete revisions. The Retry button uses that command, so a new peer
+never joins an old broadcast and acknowledged peers receive no replay. Missing
+recipient sessions remain outstanding; reconnect abandons session-local state.
+The sender retains at most 256 delivery records and never evicts an unacknowledged
+record. Retrying one revision copies only that revision's payload.
+See [broadcast retry browser evidence](docs/demo-review-fixes.jpg).
+
+If a fan-out fails after stream start, the demo closes only recipient sessions
+that still hold the affected partial stream. This also applies when the sender
+disconnects or sends invalid stream data. LIME has no stream-abort signal; closing
+the session makes interruption visible and clears assembly without issuing a
+false end or receipt. Recipients that already completed end stay connected.
+
+The demo listens on loopback only (override with `-addr 127.0.0.1:8087`). It uses
+short-lived one-use anonymous capabilities with LIME's existing plain/base64
+credential convention. Credentials do not enter URLs or the wire log. Every tab
+gets a server-bound random identity. **Messages are ephemeral**; production
+applications must commit successfully before sending end or acknowledging receipt.
+
+## Use the stack
 
 ```go
-package main
+registry, err := lime.NewRegistry(lime.Limits{})
+if err != nil { return err }
+assembler, err := lime.NewAssembler(registry, lime.Limits{})
+if err != nil { return err }
+assembler.Commit = func(message lime.Envelope) error {
+    return persistCompleteMessage(message) // application-owned transaction
+}
 
-import (
- "context"
- "github.com/takenet/lime-go"
- "log"
- "net"
- "time"
-)
-
-func main() {
-    done := make(chan bool)
-    
-    // Defines a simple handler function for printing  
-    // the received messages to the stdout
-    msgHandler := func(ctx context.Context, msg *lime.Message, s lime.Sender) error {
-    if txt, ok := msg.Content.(lime.TextDocument); ok {
-        log.Printf("Text message received - ID: %v - Type: %v - Content: %v\n", msg.ID, msg.Type, txt)
-    }
-        close(done)
-        return nil
-    }
-    
-    // Initialize the client
-    client := lime.NewClientBuilder().
-        UseTCP(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 55321}, &lime.TCPConfig{}).
-        MessagesHandlerFunc(msgHandler).
-        Build()
-    
-    // Prepare a simple text message to be sent
-    msg := &lime.Message{}
-    msg.SetContent(lime.TextDocument("Hello world!"))
-    
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-    
-    // Send the message
-    if err := client.SendMessage(ctx, msg); err != nil {
-        log.Printf("send message: %v\n", err)
-    }
-    
-    // Wait for the echo message
-    <-done
-    
-    // Close the client
-    err := client.Close()
-    if err != nil {
-        log.Printf("close: %v\n", err)
+// c is a *lime.Conn created with Dial or Upgrade and an established session.
+for {
+    envelope, err := c.Receive(ctx)
+    if err != nil { return err }
+    kind, err := envelope.Kind()
+    if err != nil { return err }
+    if kind != lime.Message { continue } // dispatch sessions/commands/notifications
+    result, err := assembler.Apply(envelope)
+    if err != nil { return err } // send correlated failed; discard the stream
+    if result.Complete && result.Message.ID != "" {
+        // For Duplicate, reissue receipt without redisplaying/recommitting.
+        err = c.Send(ctx, lime.Envelope{
+            ID: result.Message.ID, Rev: result.Message.Rev,
+            To: result.Message.From, Event: "received",
+        })
+        if err != nil { return err }
     }
 }
 ```
 
-## Protocol overview
+`Envelope.Content` and `Resource` are `json.RawMessage`; nil means absent and
+`[]byte("null")` means JSON null. `Rev == 0` encodes omission, whose wire meaning
+is revision 1. Start declares type; data carries a contribution; end carries
+neither. `Result.Message` on data is the contribution with resolved type/routing;
+complete assembled content is returned only at end. JSON numbers retain their
+literal precision. Serialized JSON inside a text string stays text.
 
-The base protocol data package is called **envelope** and there are four types: **Message, notification, command and
-session**.
+`Decode` owns returned bytes and rejects ambiguous families, duplicate keys,
+unknown fields, invalid UTF-8, wrong lifecycle fields and illegal event/scope pairs.
+`Append` writes into a caller-owned reusable buffer; raw values are validated.
+`Conn` serializes reads/writes with cancelable ownership gates. Cancellation during
+I/O closes the socket; canceled queued operations leave the owner alone. Writes
+have a ten-second upper deadline. Callers own session shutdown and dispatch.
 
-All envelope types share some properties, like the `id` - the envelope's unique identifier - and the `from` and `to`
-routing information.
-They also have the optional `metadata` property, which can be used to send any extra information about the envelope,
-much like a header in the HTTP protocol.
+Use `AcceptSession` with a verified `TransportIdentity` from HTTP authentication,
+or an `Authenticate` callback for the existing plain scheme. Configure `LocalNode`
+when the server should advertise its routing identity; it is returned as the
+client session's `Remote` node. Resolve omitted from/to fields using verified
+session context before applying delivery tracking, and track resolved MIME types. `EstablishSession`
+sends `version: 2`. Production use requires TLS, verified authorized scope and
+per-operation authorization. Peer `from` and `pp` fields never override the bound
+identity. See the demo for routing and the profile for reason codes.
 
-### Message
+A registry owns aliases and schemas for one session. Built-in aliases match the
+draft. Only text/plain and application/json have default content acceptance;
+recognizing a vendor alias does not install its schema. `Registry.Support` installs
+an explicit validator for a supported canonical custom/vendor type. Unsupported
+streaming types are rejected at start. `AliasCommand` implements get/set
+`/protocol/aliases`; registration is atomic, bounded, additive and session-local.
+Trusted rendering and business validation remain application concerns.
 
-The message envelope is used to transport a **document** between sessions.
-A document is just a type with a known MIME type.
+`Tracker` owns delivery order for one peer/direction. Resolve MIME aliases before tracking. Reserve with `Track(resolvedStart)`
+and replace that entry with `Track(assembledCompleteMessage)` before releasing
+end. `Pending` returns owned complete-message snapshots for bounded caller-scheduled
+retries, preserving `(id, rev)` without storing chunks. Apply notifications with
+`Apply`. Message received clears only its entry; session received requires a
+completed contiguous prefix. Failed/consumed never release receipt payloads.
+Use explicit `Resolve` only after both peers agree to resolve a failed entry.
+`MarkRead` plus `ReadNotification` prevents local thread read watermarks crossing
+unread gaps. ID-less messages are outside this ledger. No reconnect state is
+inherited automatically; unknown/expired markers fail.
 
-For instance, a message with a **text document** can be represented like this in JSON:
+Defaults are 64 KiB frames, 1 MiB assembled content, 8 MiB pending retry payloads,
+32 active streams, 256 retained delivery/dedup markers, 256 contributions per
+stream, 32 custom aliases/types, and JSON depth 64. Completed deduplication retains
+SHA-256 digests and routing, rather than whole payloads. Received/resolved retry
+payloads are released immediately. Configure `Limits` at startup for the service's
+memory budget; these are finite implementation limits, not standardized wire sizes.
 
-```json
-{
-  "id": "1",
-  "to": "john",
-  "type": "text/plain",
-  "content": "Hello from Lime!"
-}
+## Verify and measure
+
+```sh
+./scripts/verify.sh origin/master
+make bench
 ```
 
-In Go, the message envelope is implemented by the `lime.Message` type:
-
-```go
-msg := &lime.Message{}
-msg.SetContent(lime.TextDocument("Hello from Lime!")).
-    SetID("1").
-    SetToString("john")
-```
-
-In this example, the document value is the `Hello from Lime!` text and its MIME type is `text/plain`.
-
-This message also has an `id` property with `1` value.
-The id value is useful to **correlate notifications** about the message.
-When the id is set, the sender may receive notifications (receipts) with message events, which will have the same id.
-For instance, you may want to know if a message was received or read by its destination.
-In this case, you should provide an id value to the message.
-
-The `to` property sets the destination address of the message, and it is used by the server to route the envelope
-to the correct destination.
-The address format is called **node** and in its full form is presented in the `name@domain/instance` format, similar to
-the [XMPP's Jabber ID](https://xmpp.org/rfcs/rfc3920.html#rfc.section.3).
-The node's *domain* and *instance* portions are optional, so the value `john` used in the example is a valid node
-address.
-
-In the previous example, the content is plain text.
-But a message can be used to transport any type of document that can be represented as JSON.
-
-For instance, to send a generic JSON document you can use the `application/json` type:
-
-```json
-{
-  "id": "1",
-  "to": "john",
-  "type": "application/json",
-  "content": {
-    "text": "Hello from Lime!",
-    "timestamp": "2022-03-23T00:00:00.000Z"
-  }
-}
-```
-
-Building the same message in Go would be like this:
-
-```go
-msg := &lime.Message{}
-msg.SetContent(&lime.JsonDocument{
-        "text": "Hello from Lime!",
-        "timestamp": "2022-03-23T00:00:00.000Z"}).
-    SetID("1").
-    SetToString("john")
-```
-
-You can also can (and probably should) use custom MIME types for representing well-known types from your application
-domain:
-
-```json
-{
-  "id": "1",
-  "to": "john",
-  "type": "application/x-app-image+json",
-  "content": {
-    "caption": "Look at this kitten!",
-    "url": "https://mycdn.com/cat.jpg"
-  }
-}
-```
-
-Using custom MIME types enables the mapping of documents with types from your code.
-For this to be possible, these types need to implement the `lime.Document` interface.
-
-```go
-type Image struct {
-    Caption string `json:"caption,omitempty"`
-    URL     string `json:"url,omitempty"`
-}
-
-func (f *Image) MediaType() lime.MediaType {
-    return lime.MediaType{
-        Type:    "application",
-        Subtype: "x-app-image",
-        Suffix:  "json",
-    }
-}
-
-// To register your custom type, use the RegisterDocumentFactory function.
-func init() {
-    lime.RegisterDocumentFactory(func() Document {
-        return &Image{}
-    })
-}
-```
-
-For instance, to send a message to the `john` node, you can use the `SendMessage` method that is implemented both by
-the `lime.Server` and `lime.Client` types:
-
-```go
-msg := &lime.Message{}
-msg.SetContent(lime.TextDocument("Hello from Lime!")).
-    SetID("1").
-    SetToString("john")
-
-err := client.SendMessage(context.Background(), msg)
-```
-
-And for receiving messages, you can use a message handler that can be registered during the instantiation of the client
-or the server:
-
-```go
-client := lime.NewClientBuilder().
-    MessagesHandlerFunc(
-        func(ctx context.Context, msg *lime.Message, s lime.Sender) error {
-            if txt, ok := msg.Content.(lime.TextDocument); ok {
-                fmt.Printf("Text message received - ID: %v - Type: %v - Content: %v\n", msg.ID, msg.Type, txt) 
-            }
-            return nil
-        }).
- Build()
-```
-
-### Notification
-
-A notification provides information about a message to its sender.
-They are sent only for messages that have the `id` value defined.
-
-To illustrate, a node may want to notify the sender that a message was received.
-It can be done like this:
-
-```json
-{
-  "id": "1",
-  "to": "mary",
-  "event": "received"
-}
-```
-
-The notification `to` value should have the value of the `from` property of the message (or the `pp` value, if present).
-
-In Go, you can use the `Notification(event)` method from the `*lime.Message` type for building a notification for the
-message:
-
-```go
-// Creates a corresponding notification to the message
-if msg.ID != "" {
-    not := msg.Notification(lime.NotificationEventReceived)
-    // Send the notification 
-    err := s.SendNotification(ctx, not)
-}
-```
-
-Notifications can be emitted by the **destination of the message or by intermediates** - like a server that routes the
-message.
-
-The protocol defines the following notification events:
-
-- **accepted**: The message was received and accepted by an intermediate.
-- **dispatched**: The message was dispatched to the destination by the intermediate.
-- **received**: The message was received by its destination.
-- **consumed**: The message was processed (read) by its destination.
-- **failed**: A problem occurred during the processing of the message.
-
-A single message can **have multiple notifications**, one or more for each hop on its path to the destination.
-
-By convention, the **consumed** and **failed** notifications are considered final, so no other notification should be
-received by the message sender after one of these.
-
-In case of failed notifications, a **reason** value should be present.
-
-For instance, a server (intermediate) should notify the sender if it is unable to determine the destination session of
-a message:
-
-```json
-{
-  "id": "1",
-  "to": "mary",
-  "event": "failed",
-  "reason": {
-    "code": 1,
-    "description": "Destination not found"
-  }
-}
-```
-
-In Go, you can use the message's `FailedNotification(reason)` method for that:
-
-```go
-not := msg.FailedNotification(&lime.Reason{Code: 1, Description: "Destination not found"})
-```
-
-### Command
-
-The command envelope is used to **read and write resources of a remote node**.
-It provides a REST capable interface, with URI and methods (verbs), similar to the HTTP protocol.
-It also supports multiplexing, so the connection is not blocked to wait for a response when a request is sent.
-
-There are two types of commands: a request command - which contains a `uri` value - or a response command - with a
-`status` value.
-
-For instance, you can use commands for managing your contact list or to set your current status (available, busy, away).
-Another common use is **the in-band registration**, where users can create accounts for your service in the protocol
-itself.
-
-The advantage of using commands is that you can use the **same existing connection** that is used for messaging for
-handling resources, instead of creating out-of-band connections for that.
-
-In practice, you can avoid having an external HTTP service for handling resources related to your messaging service.
-
-This is more efficient in terms of energy consumption but also is usually more performatic as well.
-Using a session that is already established and authenticated avoids the additional overhead of a TLS handshake and
-authentication that an external connection would require.
-
-But there is a limitation: the command interface only supports JSON payloads, so you should not use it for
-transporting binary or any kind of large content.
-
-Like in an HTTP service, the URI and methods that you may use in commands depend on what the server implements.
-
-For instance, a server could implement a contact management service.
-In this example, to retrieve all contacts, you could send a command like this:
-
-```json
-{
-  "id": "2",
-  "method": "get",
-  "uri": "/contacts"
-}
-```
-
-And the server may respond to this request like this:
-
-```json
-{
-  "id": "2",
-  "from": "postmaster@localhost/server1",
-  "method": "get",
-  "status": "success",
-  "type": "application/vnd.lime.collection+json",
-  "resource": {
-    "total": 2,
-    "itemType": "application/vnd.lime.contact+json",
-    "items": [
-      {
-        "identity": "john@localhost",
-        "name": "John Doe"
-      },
-      {
-        "identity": "mary@localhost",
-        "name": "Mary Jane"
-      }
-    ]
-  }
-}
-```
-
-This is a response command with a **status** and a **resource** value.
-
-Note that the value of the `id` property is the same as the request.
-This is how we know that a response is to a specific request, so it is important to avoid using duplicate ids to avoid
-collisions. A way of doing this is to use GUID (UUID) values as id for the requests.
-
-The status is always present in a response command, but the resource may be present depending on the method of the
-request and the status of the response. In successful `get` methods, the value of `resource` - and consequently `type` -
-should be present. In `set` requests, the `resource` value will probably not be present. This is similar to the HTTP
-methods and body, when `GET` requests will have a value in the response body if successful and not always in `POST`
-requests.
-
-In case of `failure` response status, the command should have the `reason` property defined:
-
-```json
-{
-  "id": "2",
-  "from": "postmaster@localhost/server1",
-  "method": "get",
-  "status": "failure",
-  "reason": {
-    "code": 10,
-    "description": "No contact was found" 
-  }
-}
-```
-
-For creating a request command in Go, you can use the `lime.RequestCommand` type:
-
-```go
-reqCmd := &lime.RequestCommand{}
-reqCmd.SetURIString("/contacts").
-    SetMethod(lime.CommandMethodGet).
-    SetID(lime.NewEnvelopeID())
-```
-
-Note that for the `id` value, we are using the value returned by the `lime.NewEnvelopeID()` function, which will return
-a UUID v4 string (something like `3cdd2654-911d-497e-834a-3b7865510155`).
-
-For sending a command request, you should use the `ProcessCommand` method instead of the `SendCommand` method.
-This is because the `ProcessCommand` method takes care of waiting for the corresponding response command.
-
-```go
-respCmd, err := client.ProcessCommand(context.Background(), reqCmd)
-if err == nil {
-    // TODO: Handle the response
-}
-```
-
-In the server side, you can add handlers for specific commands using the `RequestCommandHandler*` methods from
-the `lime.Server` type.
-
-```go
-server := lime.NewServerBuilder().  
-    RequestCommandHandlerFunc(
-        // Set a predicate for filtering only the get contacts commands
-        func(cmd *lime.RequestCommand) bool {
-            return cmd.Method == lime.CommandMethodGet && cmd.URI.Path() == "/contacts"
-        },
-        // The handler implementation
-        func(ctx context.Context, cmd *lime.RequestCommand, s lime.Sender) error {
-            // Create a document collection of contacts
-            contacts := &lime.DocumentCollection{
-                Total:    2,
-                ItemType: chat.MediaTypeContact(),
-                Items: []lime.Document{
-                    &chat.Contact{Name: "John Doe"},
-                    &chat.Contact{Name: "Mary"},
-                },
-            }
-            // Send the response to the sender
-            respCmd := cmd.SuccessResponseWithResource(contacts)
-            return s.SendResponseCommand(ctx, respCmd)
-        }).
-    // TODO: Setup other server options
-    Build()
-```
-
-This is also valid for the `lime.Client` type.
-In Lime, the **client can receive and process commands requests** from other nodes, like the server.
-
-### Session
-
-> Note: The session establishment flow is automatically handled by the library.
-
-The session envelope is used for the negotiation, authentication, and establishment of the communication channel between
-the client and a server.
-It helps the parties to select the transport options, like compression and encryption (TLS), authentication credentials,
-and session metadata, like its `id` and local/remote node addresses.
-
-The first envelope sent in every Lime session is the **new session** envelope, which the client sends to the server
-after the transport connection is established:
-
-```json
-{
-  "state": "new"
-}
-```
-
-The server should reply to this with another session envelope, according to the session state that it wants to enforce.
-
-For instance, the server may want to present the client with the transport options for negotiation.
-This is useful for applying the TLS encryption to an unencrypted connection (the TCP connection starts without
-encryption by default).
-
-```json
-{
-  "id": "0676a702-a7d6-43e6-947f-bde3c3e25eb5",
-  "from": "server@localhost/s1",
-  "state": "negotiating",
-  "compressionOptions": ["none"],
-  "encryptionOptions": ["none", "tls"]
-}
-```
-
-Note that this envelope haves an `id` defined, which is the **session id**.
-The next session envelopes sent by the client should use this same id, until the end of the session.
-During the session establishment, only session envelopes are allowed.
-
-The server can skip the `negotiating` state and jump directly to the `authenticating` or even to the `established`
-state. The session state progression can occur in the following order:
-
-1. new (started by the client)
-2. negotiating (optional)
-3. authenticating (optional)
-4. established
-5. finishing (optional, started by the client)
-6. finished OR failed (final)
-
-In Go, the session negotiation, authentication, and establishment process is **automatically handled** by the
-`lime.Client` and `lime.Server` types.
-You just need to make sure that the server and client are configured accordingly the desired behavior.
-
-For instance, if you want to ensure that the TCP transport connections are using TLS encryption, you will need to
-configure the server similarly to this:
-
-```go
-server := lime.NewServerBuilder().
-    // Enable the TLS encryption option for all sessions
-    EncryptionOptions(lime.SessionEncryptionTLS).
-    // Set up the TCP listener providing a certificate
-    ListenTCP(addr, &lime.TCPConfig{
-        TLSConfig: &tls.Config{
-            GetCertificate: func(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
-                cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
-                if err != nil {
-                    return nil, err
-                }
-                return &cert, nil
-            },
-        }}).
-    // TODO: Setup other server options
-    Build()
-```
-
-And in the client side, you should set up the TLS encryption option and the TCP config:
-
-```go
-client := lime.NewClientBuilder().
-    Encryption(lime.SessionEncryptionTLS).
-    UseTCP(addr, &lime.TCPConfig{
-        TLSConfig:   &tls.Config{ServerName: "localhost"},
-    }).
-    // TODO: Setup other client options
-    Build()
-```
-
-You may also want to configure the server and client authentication mechanisms.
-The Lime Go library supports the following schemes:
-
-- Guest (no authentication)
-- Plain (password)
-- Key
-- Transport (mutual TLS on TCP)
-- External (token emitted by an issuer)
-
-To enable the use of plain authentication, in the server you should use the `EnablePlainAuthentication` method passing
-the authentication handler function, like in the example below:
-
-```go
-server := lime.NewServerBuilder().
-    EnablePlainAuthentication(
-        func(ctx context.Context, i lime.Identity, pwd string) (*lime.AuthenticationResult, error) {
-        // TODO: implement checkCredentials to validate the user/password in your secret store
-        if checkCredentials(i.Name, pwd) {
-            return &lime.AuthenticationResult{Role: lime.DomainRoleMember}, nil
-        }
-        return &lime.AuthenticationResult{Role: lime.DomainRoleUnknown}, nil
-    }).
-    // TODO: Setup other server options
-    Build()
-```
-
-On the client side, you can use the `PlainAuthentication` method to set the password that should be used:
-
-```go
-client := lime.NewClientBuilder().
-    // Sets the identity name and password
-    Name("john").
-    PlainAuthentication("mysecretpassword").
-    // TODO: Setup other client options
-    Build()
-```
+Verification runs formatting, whitespace, vet, builds, race/integration tests,
+frontend contract tests, and **90% coverage of changed executable Go/JavaScript
+lines**. Node 22+ is needed only for verification. GitHub Actions enforces the
+same gate and does not automatically tag/release this experimental protocol.
+
+See [benchmark evidence](docs/performance.md), [the implementation task](BACKLOG.md),
+and [browser verification](docs/demo-browser.jpg). Microbenchmarks are codec
+measurements, not production end-to-end latency or GC pause guarantees.
