@@ -31,6 +31,18 @@ disconnect and establish a new session. The tests additionally cover default and
 non-default revisions, cumulative receipt/read gaps, failed entries, unsupported
 versions, spoofed identities, binary frames, overload and interrupted streams.
 
+Choose **Receipt scope: Session prefix** to send `received` watermarks across
+threads, or keep individual message receipts. Turn off **Automatic receipts**
+and use **Send received notifications** to inspect pending messages and retries.
+Choose **Read scope: Thread prefix**, enter the target **Thread**, and press
+**Mark completed messages read** to send a cumulative `consumed` watermark for
+that thread. Other threads remain outside that read notification. Cumulative
+progress uses delivery order and stops before unfinished streams; after finishing
+the stream, send receipts/read progress again. A session containing several
+original senders sends each origin its latest covered marker. Notification status
+and the wire viewer display the scope, exact message ID and revision.
+See [scoped notification browser evidence](docs/demo-scoped-notifications.jpg).
+
 The demo listens on loopback only (override with `-addr 127.0.0.1:8087`). It uses
 short-lived one-use anonymous capabilities with LIME's existing plain/base64
 credential convention. Credentials do not enter URLs or the wire log. Every tab

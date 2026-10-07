@@ -358,3 +358,95 @@ func TestJSONStreamRetryWithClientPropertyOrder(t *testing.T) {
 		t.Fatal("valid JSON retry rejected", got)
 	}
 }
+
+func TestScopedNotificationRelay(t *testing.T) {
+	h, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	for _, item := range []struct {
+		sender     testClient
+		id, thread string
+		rev        uint64
+	}{
+		{a, "a1", "one", 2}, {c, "c1", "one", 3},
+		{a, "a2", "two", 4}, {c, "c2", "two", 5},
+	} {
+		send(t, item.sender, lime.Envelope{ID: item.id, Rev: item.rev, To: b.node, Thread: item.thread, Type: "text", Content: []byte(`"complete"`)})
+		if got := receive(t, b); got.ID != item.id || got.Rev != item.rev {
+			t.Fatal(got)
+		}
+	}
+	// Each original sender receives its latest covered marker. The receiver's
+	// session spans both origins, while their outbound buffers stay independent.
+	for _, item := range []struct {
+		sender testClient
+		id     string
+		rev    uint64
+	}{
+		{a, "a2", 4}, {c, "c2", 5},
+	} {
+		send(t, b, lime.Envelope{ID: item.id, Rev: item.rev, To: item.sender.node, Event: "received", Scope: "session"})
+		got := receive(t, item.sender)
+		if got.ID != item.id || got.Rev != item.rev || got.Scope != "session" || got.From != b.node || got.To != item.sender.node || got.Thread != "" {
+			t.Fatal(got)
+		}
+	}
+	if entries := h.find(b.node).tracker.Pending(); len(entries) != 0 {
+		t.Fatal("prefix not released", entries)
+	}
+	for _, item := range []struct {
+		sender testClient
+		id     string
+		rev    uint64
+	}{
+		{a, "a1", 2}, {c, "c1", 3},
+	} {
+		send(t, b, lime.Envelope{ID: item.id, Rev: item.rev, To: item.sender.node, Event: "consumed", Scope: "thread", Thread: "one"})
+		got := receive(t, item.sender)
+		if got.ID != item.id || got.Rev != item.rev || got.Scope != "thread" || got.Thread != "one" || got.From != b.node {
+			t.Fatal(got)
+		}
+	}
+	// Scoped relay does not prevent later direct messaging on this session.
+	send(t, a, lime.Envelope{ID: "after", To: b.node, Type: "text", Content: []byte(`"after"`)})
+	if got := receive(t, b); got.ID != "after" {
+		t.Fatal(got)
+	}
+}
+
+func TestScopedNotificationGaps(t *testing.T) {
+	for _, tc := range []struct {
+		name, event, scope, gapThread string
+		accept                        bool
+	}{
+		{"session across threads", "received", "session", "other", false},
+		{"thread skips other threads", "consumed", "thread", "other", true},
+		{"thread blocks its own gap", "consumed", "thread", "chosen", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, s := demo(t)
+			a, b := client(t, s), client(t, s)
+			send(t, a, lime.Envelope{ID: "gap", To: b.node, Thread: tc.gapThread, Type: "text", Stream: "start"})
+			if got := receive(t, b); got.Stream != "start" {
+				t.Fatal(got)
+			}
+			send(t, a, lime.Envelope{ID: "marker", Rev: 2, To: b.node, Thread: "chosen", Type: "text", Content: []byte(`"done"`)})
+			if got := receive(t, b); got.ID != "marker" {
+				t.Fatal(got)
+			}
+			n := lime.Envelope{ID: "marker", Rev: 2, To: a.node, Event: tc.event, Scope: tc.scope}
+			if tc.scope == "thread" {
+				n.Thread = "chosen"
+			}
+			send(t, b, n)
+			if tc.accept {
+				if got := receive(t, a); got.ID != "marker" || got.Scope != "thread" || got.Thread != "chosen" {
+					t.Fatal(got)
+				}
+			} else {
+				if got := receive(t, b); got.State != "failed" || got.Reason == nil || !strings.Contains(got.Reason.Description, "incomplete") {
+					t.Fatal(got)
+				}
+			}
+		})
+	}
+}

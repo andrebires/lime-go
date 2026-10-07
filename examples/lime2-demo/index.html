@@ -153,6 +153,33 @@
     </section>
     <section>
       <h2>Messages</h2>
+      <div class="bar">
+        <label
+          >Receipt scope
+          <select id="receiptScope">
+            <option value="message">Message</option>
+            <option value="session">Session prefix</option>
+          </select>
+        </label>
+        <label
+          ><input id="autoReceipt" type="checkbox" checked />Automatic
+          receipts</label
+        >
+        <button id="receipt" disabled>Send received notifications</button>
+        <label
+          >Read scope
+          <select id="readScope">
+            <option value="message">Message</option>
+            <option value="thread">Thread prefix</option>
+          </select>
+        </label>
+      </div>
+      <p>
+        Session receipts cover completed deliveries across threads. Thread read
+        notifications use the Thread field above. Cumulative progress stops
+        before an unfinished stream; the wire viewer shows the exact marker and
+        scope.
+      </p>
       <div id="messages" aria-live="polite"></div>
       <button id="read" disabled>Mark completed messages read</button>
     </section>

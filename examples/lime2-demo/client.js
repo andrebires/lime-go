@@ -8,6 +8,8 @@ let ws,
 const active = new Map(),
   complete = new Map(),
   pending = new Map(),
+  sentOrder = new Map(),
+  incoming = new Map(),
   commands = new Map();
 function log(direction, e) {
   const safe = { ...e };
@@ -48,6 +50,7 @@ function controls(connected) {
     "alias",
     "retry",
     "read",
+    "receipt",
     "text",
   ])
     $(id).disabled = !connected;
@@ -104,6 +107,92 @@ function render(e, value, done) {
   el.className = done ? "" : "pending";
   return el;
 }
+// Reserve on start, so completion order cannot move a watermark past a gap.
+function reserveIncoming(e) {
+  if (!e.id || incoming.has(key(e))) return true;
+  if (incoming.size >= 256) {
+    const first = incoming.keys().next().value;
+    if (!incoming.get(first).received) {
+      status("Delivery history limit: acknowledge or reconnect");
+      ws.close();
+      return false;
+    }
+    incoming.delete(first);
+  }
+  incoming.set(key(e), { message: e, done: false, received: false });
+  return true;
+}
+function notification(e, event, scope) {
+  const n = { id: e.id, rev: e.rev, to: e.from, event };
+  if (scope !== "message") n.scope = scope;
+  if (event === "consumed") n.thread = e.thread;
+  send(n);
+}
+function acknowledge(message) {
+  const scope = $("receiptScope").value || "message";
+  if (scope === "message") {
+    const items = message ? [incoming.get(key(message))] : incoming.values();
+    for (const item of items) {
+      if (item.done) {
+        notification(item.message, "received", scope);
+        item.received = true;
+      }
+    }
+    return;
+  }
+  const prefix = [];
+  for (const item of incoming.values()) {
+    if (!item.done) break;
+    prefix.push(item);
+  }
+  cumulative(prefix, "received", "session");
+  for (const item of prefix) item.received = true;
+  if (prefix.length < incoming.size)
+    status("Session receipt waiting for an incomplete delivery");
+  else if (prefix.length)
+    status("Session receipts sent through the completed delivery prefix");
+}
+// The hub fans multiple senders into this session. Send each origin its latest
+// covered marker, in wire order; each sender owns a separate outbound buffer.
+function cumulative(items, event, scope) {
+  const latest = new Map();
+  for (const item of items) latest.set(item.message.from, item);
+  for (const item of items)
+    if (latest.get(item.message.from) === item)
+      notification(item.message, event, scope);
+}
+function rememberSent(e, done) {
+  const k = e.id + "/" + (e.rev || 1);
+  if (!sentOrder.has(k)) {
+    if (sentOrder.size >= 256) {
+      const retired = [...sentOrder.keys()].find((id) => !pending.has(id));
+      sentOrder.delete(retired);
+    }
+    sentOrder.set(k, { to: e.to || "", done, failed: false });
+  } else sentOrder.get(k).done = done;
+  pending.set(k, done ? e : null);
+}
+function applyReceipt(e) {
+  const k = e.id + "/" + (e.rev || 1),
+    marker = sentOrder.get(k);
+  if (!marker || (e.from && marker.to && marker.to !== e.from)) return true;
+  const peer = e.from || marker.to;
+  const covered = [];
+  for (const [id, item] of sentOrder) {
+    if ((e.scope === "session" && (!item.to || item.to === peer)) || id === k)
+      covered.push(id);
+    if (id === k) break;
+  }
+  if (
+    covered.some((id) => !sentOrder.get(id).done || sentOrder.get(id).failed)
+  ) {
+    status("Rejected receipt watermark with incomplete gap or failed delivery");
+    return false;
+  }
+  for (const id of covered) pending.delete(id);
+  if (pending.size < 256) $("send").disabled = false;
+  return true;
+}
 function received(e, value, element) {
   const k = key(e);
   complete.set(e.id ? k : "idless/" + crypto.randomUUID(), {
@@ -117,7 +206,12 @@ function received(e, value, element) {
     complete.delete(first);
   }
   active.delete(k);
-  if (e.id) send({ id: e.id, rev: e.rev, to: e.from, event: "received" });
+  if (e.id) {
+    const delivery = incoming.get(k);
+    delivery.message = e;
+    delivery.done = true;
+    if ($("autoReceipt").checked) acknowledge(e);
+  }
 }
 function handle(e) {
   if (e.state) {
@@ -167,28 +261,26 @@ function handle(e) {
     return;
   }
   if (e.event) {
-    if (e.event === "received") {
-      if (e.scope === "session") {
-        const list = [...pending.keys()];
-        const marker = list.findIndex((k) => k === e.id + "/" + (e.rev || 1));
-        if (marker >= 0) {
-          const prefix = list.slice(0, marker + 1);
-          if (prefix.some((k) => pending.get(k) === null)) {
-            status("Rejected receipt watermark with incomplete gap");
-            return;
-          }
-          for (const k of prefix) pending.delete(k);
-        }
-      } else pending.delete(e.id + "/" + (e.rev || 1));
+    if (e.event === "received" && !applyReceipt(e)) return;
+    if (e.event === "failed") {
+      const entry = sentOrder.get(e.id + "/" + (e.rev || 1));
+      if (entry) entry.failed = true;
     }
-    if (e.event === "received" && pending.size < 256)
-      $("send").disabled = false;
     status(
-      e.event + " " + e.id + (e.reason ? " · " + e.reason.description : ""),
+      e.event +
+        " · " +
+        (e.scope || "message") +
+        " · " +
+        e.id +
+        " rev " +
+        (e.rev || 1) +
+        (e.thread ? " · " + e.thread : "") +
+        (e.reason ? " · " + e.reason.description : ""),
     );
     return;
   }
   const k = key(e);
+  if (e.stream !== "data" && e.stream !== "end" && !reserveIncoming(e)) return;
   if (e.stream === "start") {
     const item = {
       message: e,
@@ -229,7 +321,7 @@ function handle(e) {
     return;
   }
   if (e.id && complete.has(k)) {
-    if (e.id) send({ id: e.id, rev: e.rev, to: e.from, event: "received" });
+    if ($("autoReceipt").checked) acknowledge(e);
     return;
   }
   received(e, e.content, render(e, e.content, true));
@@ -238,6 +330,7 @@ $("connect").onclick = async () => {
   try {
     complete.clear();
     active.clear();
+    incoming.clear();
     $("messages").replaceChildren();
     const resp = await fetch("/identity", { method: "POST" });
     if (!resp.ok) throw Error(await resp.text());
@@ -267,6 +360,7 @@ $("connect").onclick = async () => {
       }
       active.clear();
       pending.clear();
+      sentOrder.clear();
       commands.clear();
       stream = null;
       aliasReady = false;
@@ -298,7 +392,7 @@ $("text").addEventListener("input", () => {
       to: $("recipient").value,
       thread: $("thread").value,
     };
-    pending.set(stream.id + "/1", null);
+    rememberSent(base(stream.id), false);
     send({
       ...base(stream.id),
       type: aliasReady ? "note" : "text",
@@ -320,11 +414,14 @@ $("text").addEventListener("input", () => {
 function finish() {
   if (stream) {
     send({ id: stream.id, to: stream.to, stream: "end" });
-    pending.set(stream.id + "/1", {
-      ...base(stream.id),
-      type: aliasReady ? "note" : "text",
-      content: stream.sent,
-    });
+    rememberSent(
+      {
+        ...base(stream.id),
+        type: aliasReady ? "note" : "text",
+        content: stream.sent,
+      },
+      true,
+    );
     stream = null;
   } else {
     if (!admit()) return;
@@ -335,7 +432,7 @@ function finish() {
       content: $("text").value,
     };
     send(e);
-    pending.set(id + "/1", e);
+    rememberSent(e, true);
   }
   $("text").value = "";
   $("live").disabled = false;
@@ -350,7 +447,7 @@ $("json").onclick = () => {
   const connection = ws;
   const id = crypto.randomUUID(),
     e = base(id);
-  pending.set(id + "/1", null);
+  rememberSent(e, false);
   send({ ...e, type: "json", stream: "start" });
   send({
     id,
@@ -371,23 +468,45 @@ $("json").onclick = () => {
       content: { options: ["Payments"], temporary: null },
     });
     send({ id, to: e.to, stream: "end" });
-    pending.set(id + "/1", {
-      ...e,
-      type: "json",
-      content: { text: "Choose a topic", options: ["Payments"] },
-    });
+    rememberSent(
+      {
+        ...e,
+        type: "json",
+        content: { text: "Choose a topic", options: ["Payments"] },
+      },
+      true,
+    );
   }, 750);
 };
+$("receipt").onclick = () => acknowledge();
 $("read").onclick = () => {
-  for (const item of complete.values())
-    if (item.message.id)
-      send({
-        id: item.message.id,
-        rev: item.message.rev,
-        to: item.message.from,
-        thread: item.message.thread,
-        event: "consumed",
-      });
+  const scope = $("readScope").value || "message";
+  if (scope === "message") {
+    for (const item of incoming.values())
+      if (item.done) notification(item.message, "consumed", scope);
+    return;
+  }
+  const thread = $("thread").value;
+  if (!thread) {
+    status("Choose a Thread before sending a thread read notification");
+    return;
+  }
+  const prefix = [];
+  let gap = false;
+  for (const item of incoming.values()) {
+    if (item.message.thread !== thread) continue;
+    if (!item.done) {
+      gap = true;
+      break;
+    }
+    prefix.push(item);
+  }
+  cumulative(prefix, "consumed", "thread");
+  status(
+    gap
+      ? "Thread read waiting for an incomplete delivery"
+      : "Marked thread " + thread + " read through its completed prefix",
+  );
 };
 $("retry").onclick = () => {
   for (const e of pending.values()) if (e) send(e);

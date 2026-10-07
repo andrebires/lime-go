@@ -1,5 +1,23 @@
 # Implementation backlog
 
+## LIME2-T02 — Demonstrate cumulative notification scopes
+
+- Status: Done
+- Authority: user request 2026-10-07; notification scopes in ADR 0001 and draft §5.2.
+- Outcome: selectable message/session receipts and message/thread read notifications
+  in the browser demo, with automatic/manual receipts and visible scope feedback.
+- Acceptance: cumulative markers use delivery order, stop at incomplete gaps,
+  preserve exact revisions, stay within recipient/thread boundaries, and work with
+  multiple senders. Tests, race/build/static checks, >=90% diff coverage and live
+  browser verification pass.
+- Excludes: new wire events/scopes, durable storage, session resume.
+- Evidence: `./scripts/verify.sh HEAD` passed with 134/134 (100%) changed
+  executable lines covered. Full PR gate: 1967/2053 (95.81%). Browser contract
+  coverage: 100% lines/functions, 96.20% branches. WebSocket integration tests
+  verify scoped relay and gap rejection. Three live browser clients verified
+  session receipts across senders/threads, stream gaps and isolated thread reads;
+  [screenshot](docs/demo-scoped-notifications.jpg).
+
 ## LIME2-T01 — JSON protocol stack and live multi-client demo
 
 - Status: Done

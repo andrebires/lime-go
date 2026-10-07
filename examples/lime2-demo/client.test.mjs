@@ -49,6 +49,9 @@ function lab() {
   };
   get("thread").value = "demo";
   get("live").checked = true;
+  get("autoReceipt").checked = true;
+  get("receiptScope").value = "message";
+  get("readScope").value = "message";
   let nextID = 0;
   const sockets = [],
     timers = [];
@@ -393,4 +396,268 @@ test("incomplete streams reserve retry slots and never resume on new connections
   l.get("text").value = "blocked";
   l.get("text").listeners.input();
   assert.equal(next.sent.length, count);
+});
+
+test("manual session receipts preserve wire order, revisions and all origins", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("autoReceipt").checked = false;
+  l.get("receiptScope").value = "session";
+  const before = s.sent.length;
+  s.deliver({
+    id: "first",
+    rev: 2,
+    from: "bob",
+    thread: "one",
+    type: "text",
+    content: "first",
+  });
+  s.deliver({
+    id: "gap",
+    from: "bob",
+    thread: "one",
+    type: "text",
+    stream: "start",
+  });
+  s.deliver({
+    id: "carol",
+    rev: 3,
+    from: "carol",
+    thread: "two",
+    type: "text",
+    content: "other sender",
+  });
+  s.deliver({
+    id: "last",
+    from: "bob",
+    thread: "two",
+    type: "text",
+    content: "last",
+  });
+  s.deliver({ from: "bob", type: "text", content: "ID-less" });
+  assert.equal(s.sent.length, before);
+  l.get("receipt").onclick();
+  assert.deepEqual(s.sent.slice(before), [
+    { id: "first", rev: 2, to: "bob", event: "received", scope: "session" },
+  ]);
+  assert.match(l.get("state").textContent, /incomplete/);
+  s.deliver({ id: "gap", from: "bob", stream: "end" });
+  const start = s.sent.length;
+  l.get("receipt").onclick();
+  assert.deepEqual(s.sent.slice(start), [
+    { id: "carol", rev: 3, to: "carol", event: "received", scope: "session" },
+    { id: "last", to: "bob", event: "received", scope: "session" },
+  ]);
+  l.get("autoReceipt").checked = true;
+  s.deliver({
+    id: "last",
+    from: "bob",
+    thread: "two",
+    type: "text",
+    content: "last",
+  });
+  assert.equal(s.sent.at(-1).scope, "session");
+  s.close();
+  const next = await l.connect();
+  const count = next.sent.length;
+  l.get("receipt").onclick();
+  assert.equal(next.sent.length, count);
+});
+
+test("automatic session receipts wait behind a streaming gap", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("receiptScope").value = "session";
+  const before = s.sent.length;
+  s.deliver({ id: "gap", from: "bob", type: "text", stream: "start" });
+  s.deliver({ id: "later", from: "bob", type: "text", content: "later" });
+  assert.equal(s.sent.length, before);
+  s.deliver({ id: "gap", from: "bob", stream: "end" });
+  assert.deepEqual(s.sent.at(-1), {
+    id: "later",
+    to: "bob",
+    event: "received",
+    scope: "session",
+  });
+});
+
+test("thread read prefixes isolate threads and stop at delivery gaps", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("readScope").value = "thread";
+  l.get("thread").value = "selected";
+  s.deliver({
+    id: "first",
+    rev: 2,
+    from: "bob",
+    thread: "selected",
+    type: "text",
+    content: "first",
+  });
+  s.deliver({
+    id: "other-gap",
+    from: "bob",
+    thread: "other",
+    type: "text",
+    stream: "start",
+  });
+  s.deliver({
+    id: "gap",
+    from: "bob",
+    thread: "selected",
+    type: "text",
+    stream: "start",
+  });
+  s.deliver({
+    id: "carol",
+    from: "carol",
+    thread: "selected",
+    type: "text",
+    content: "carol",
+  });
+  s.deliver({
+    id: "last",
+    rev: 4,
+    from: "bob",
+    thread: "selected",
+    type: "text",
+    content: "last",
+  });
+  s.deliver({
+    id: "no-thread",
+    from: "carol",
+    type: "text",
+    content: "no thread",
+  });
+  const before = s.sent.length;
+  l.get("read").onclick();
+  assert.deepEqual(s.sent.slice(before), [
+    {
+      id: "first",
+      rev: 2,
+      to: "bob",
+      event: "consumed",
+      scope: "thread",
+      thread: "selected",
+    },
+  ]);
+  assert.match(l.get("state").textContent, /incomplete/);
+  s.deliver({ id: "gap", from: "bob", stream: "end" });
+  const start = s.sent.length;
+  l.get("read").onclick();
+  assert.deepEqual(s.sent.slice(start), [
+    {
+      id: "carol",
+      to: "carol",
+      event: "consumed",
+      scope: "thread",
+      thread: "selected",
+    },
+    {
+      id: "last",
+      rev: 4,
+      to: "bob",
+      event: "consumed",
+      scope: "thread",
+      thread: "selected",
+    },
+  ]);
+  l.get("thread").value = "";
+  const count = s.sent.length;
+  l.get("read").onclick();
+  assert.equal(s.sent.length, count);
+  assert.match(l.get("state").textContent, /Choose a Thread/);
+  l.get("thread").value = "missing";
+  l.get("read").onclick();
+  assert.equal(s.sent.length, count);
+  l.get("readScope").value = "message";
+  l.get("read").onclick();
+  assert.ok(
+    s.sent.slice(count).every((e) => e.event === "consumed" && !e.scope),
+  );
+});
+
+test("session receipts clear only the acknowledging recipient's delivery prefix", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("live").checked = false;
+  function sendTo(to) {
+    l.get("recipient").value = to;
+    l.get("text").value = to;
+    l.get("send").onclick();
+    return s.sent.at(-1).id;
+  }
+  const first = sendTo("bob"),
+    other = sendTo("carol"),
+    marker = sendTo("bob");
+  s.deliver({ id: marker, from: "carol", event: "received", scope: "session" });
+  const beforeWrong = s.sent.length;
+  l.get("retry").onclick();
+  assert.deepEqual(
+    s.sent.slice(beforeWrong).map((e) => e.id),
+    [first, other, marker],
+  );
+  s.deliver({ id: marker, from: "bob", event: "received" });
+  s.deliver({ id: marker, from: "bob", event: "received", scope: "session" });
+  assert.match(l.get("state").textContent, /received · session/);
+  const before = s.sent.length;
+  l.get("retry").onclick();
+  assert.deepEqual(
+    s.sent.slice(before).map((e) => e.id),
+    [other],
+  );
+  // A gap to another recipient cannot block Bob's session prefix.
+  l.get("recipient").value = "carol";
+  l.get("json").onclick();
+  const later = sendTo("bob");
+  s.deliver({ id: later, from: "bob", event: "received", scope: "session" });
+  assert.ok(!l.get("state").textContent.includes("Rejected"));
+  const failed = sendTo("bob"),
+    tail = sendTo("bob");
+  s.deliver({
+    id: failed,
+    from: "bob",
+    event: "failed",
+    reason: { description: "failed delivery" },
+  });
+  s.deliver({ id: tail, from: "bob", event: "received", scope: "session" });
+  assert.match(l.get("state").textContent, /failed delivery/);
+  s.deliver({
+    id: "unknown",
+    event: "failed",
+    reason: { description: "unknown" },
+  });
+  assert.match(l.get("state").textContent, /unknown/);
+});
+
+test("manual message receipts and notification histories remain bounded", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("autoReceipt").checked = false;
+  s.deliver({ id: "m", from: "bob", type: "text", content: "m" });
+  s.deliver({ id: "m", from: "bob", type: "text", content: "m" });
+  const before = s.sent.length;
+  l.get("receipt").onclick();
+  assert.deepEqual(s.sent.slice(before), [
+    { id: "m", to: "bob", event: "received" },
+  ]);
+  l.get("autoReceipt").checked = true;
+  l.get("live").checked = false;
+  for (let i = 0; i < 258; i++) {
+    l.get("send").onclick();
+    s.deliver({ id: s.sent.at(-1).id, event: "received" });
+  }
+  assert.equal(l.get("send").disabled, false);
+  l.get("autoReceipt").checked = false;
+  for (let i = 0; i < 258; i++) {
+    if (s.readyState !== 1) break;
+    s.deliver({
+      id: "manual" + i,
+      from: "bob",
+      type: "text",
+      content: "manual",
+    });
+  }
+  assert.equal(s.readyState, 3);
+  assert.match(l.get("state").textContent, /Delivery history limit/);
 });
