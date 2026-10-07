@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  /><title>LIME 2.0 protocol lab</title>
+  <style>
+    body {
+      font: 16px system-ui;
+      margin: 0;
+      background: #fafafa;
+      color: #222;
+    }
+    main {
+      max-width: 1000px;
+      margin: auto;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 24px;
+    }
+    p {
+      line-height: 1.5;
+    }
+    .bar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+      padding: 9px;
+      border: 1px solid #aaa;
+      border-radius: 4px;
+    }
+    button {
+      cursor: pointer;
+      background: white;
+    }
+    button:disabled {
+      opacity: 0.5;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 95px;
+    }
+    section {
+      margin-top: 22px;
+    }
+    #messages {
+      min-height: 130px;
+      border: 1px solid #ddd;
+      padding: 12px;
+    }
+    article {
+      padding: 12px;
+      border-bottom: 1px solid #ddd;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    article small {
+      display: block;
+      color: #666;
+    }
+    pre {
+      background: #eee;
+      padding: 12px;
+      max-height: 280px;
+      overflow: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .warning {
+      color: #755700;
+    }
+    label {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+    }
+    #state {
+      font-weight: 600;
+    }
+    .pending {
+      opacity: 0.7;
+    }
+    @media (max-width: 600px) {
+      main {
+        padding: 16px;
+      }
+      .bar > * {
+        max-width: 100%;
+      }
+    }
+  </style>
+  <main>
+    <h1>LIME 2.0 protocol lab</h1>
+    <p>
+      Open this page in two or more tabs. Connect each client, refresh peers,
+      select a destination, and type. The other client sees content arrive as
+      you type.
+    </p>
+    <p class="warning">
+      Local demo: messages are ephemeral. “End” confirms demo processing; this
+      server has no durable storage. Reconnect starts a fresh session.
+    </p>
+    <div class="bar">
+      <button id="connect">Connect</button
+      ><button id="disconnect" disabled>Disconnect</button
+      ><span id="state" role="status">Disconnected</span>
+    </div>
+    <p id="identity"></p>
+    <section>
+      <div class="bar">
+        <label
+          >Recipient
+          <select id="recipient">
+            <option value="">All other clients</option>
+          </select></label
+        ><button id="peers" disabled>Refresh peers</button
+        ><label
+          >Thread <input id="thread" value="demo" maxlength="100"
+        /></label>
+      </div>
+    </section>
+    <section>
+      <label
+        ><input id="live" type="checkbox" checked />Stream text while
+        typing</label
+      >
+      <p>
+        Stream mode appends new characters. Finish the current stream before
+        editing previous text. Empty text is valid.
+      </p>
+      <textarea
+        id="text"
+        aria-label="Message text"
+        disabled
+        placeholder="Type a message…"
+      ></textarea>
+      <div class="bar">
+        <button id="send" disabled>Finish / send</button
+        ><button id="json" disabled>Stream JSON example</button
+        ><button id="alias" disabled>Register “note” alias</button
+        ><button id="retry" disabled>Retry unreceived complete messages</button>
+      </div>
+    </section>
+    <section>
+      <h2>Messages</h2>
+      <div id="messages" aria-live="polite"></div>
+      <button id="read" disabled>Mark completed messages read</button>
+    </section>
+    <section>
+      <details open>
+        <summary>Protocol envelopes (last 100; credentials omitted)</summary>
+        <pre id="wire"></pre>
+      </details>
+    </section>
+  </main>
+  <script src="/client.js" defer></script>
+</html>
