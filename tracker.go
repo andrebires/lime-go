@@ -125,6 +125,21 @@ func (t *Tracker) Pending() []Envelope {
 	}
 	return out
 }
+
+// PendingMessage returns an owned snapshot of one complete, retryable revision.
+// It avoids cloning unrelated payloads when retrying a specific delivery.
+func (t *Tracker) PendingMessage(from, id string, revision uint64) (Envelope, bool) {
+	if revision == 0 {
+		revision = 1
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e := t.entries[key{From: from, ID: id, Rev: revision}]
+	if e == nil || !e.complete || e.received || e.resolved || e.failed {
+		return Envelope{}, false
+	}
+	return clone(e.message), true
+}
 func (t *Tracker) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -145,3 +145,30 @@ func TestVendorTypesRequireSchemas(t *testing.T) {
 		t.Fatal("schema-supported stream failed")
 	}
 }
+
+func TestAliasRegistrationRequiresUsableVendorSchema(t *testing.T) {
+	r := registry(t, Limits{})
+	const typ = "application/vnd.lime.select+json"
+	response := r.AliasCommand(mustDecode(t, `{"id":"alias","method":"set","uri":"/protocol/aliases","type":"json","resource":{"note":"application/vnd.lime.select+json","plain":"text/plain"}}`))
+	if response.Status != "failure" || response.Reason == nil || len(r.Aliases()) != 0 {
+		t.Fatal("unusable or partial alias batch accepted", response, r.Aliases())
+	}
+	if err := r.Support(typ, func(raw json.RawMessage) error {
+		if string(raw) != `{"options":["A"]}` {
+			return errors.New("invalid select schema")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = r.AliasCommand(mustDecode(t, `{"id":"alias","method":"set","uri":"/protocol/aliases","type":"json","resource":{"note":"application/vnd.lime.select+json"}}`))
+	if response.Status != "success" {
+		t.Fatal(response)
+	}
+	if err := r.Validate("note", []byte(`{"options":["A"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Validate("note", []byte(`{}`)); err == nil {
+		t.Fatal("aliased schema bypassed")
+	}
+}

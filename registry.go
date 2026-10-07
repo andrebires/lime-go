@@ -122,6 +122,9 @@ func (r *Registry) Register(batch map[string]string) error {
 		if _, err := r.Resolve(t); err != nil {
 			return err
 		}
+		if t != "text/plain" && t != "application/json" && r.validators[t] == nil {
+			return errors.New("alias target requires an application schema validator")
+		}
 		if old, ok := r.aliases[name]; ok {
 			if old != t {
 				return errors.New("alias conflict")

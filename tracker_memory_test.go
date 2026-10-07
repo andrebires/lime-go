@@ -129,3 +129,58 @@ func TestDelayedRevisionDoesNotAcknowledgeNewEdit(t *testing.T) {
 		t.Fatal("edit receipt", err)
 	}
 }
+
+func TestPendingMessageIsScopedOwnedAndRetryable(t *testing.T) {
+	tr := tracker(t, Limits{})
+	e := deliveryMessage("m", "t")
+	if _, ok := tr.PendingMessage(e.From, e.ID, 1); ok {
+		t.Fatal("unknown revision became retryable")
+	}
+	start := e
+	start.Content = nil
+	start.Stream = "start"
+	if err := tr.Track(start); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tr.PendingMessage(e.From, e.ID, 1); ok {
+		t.Fatal("incomplete revision became retryable")
+	}
+	if err := tr.Track(e); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := tr.PendingMessage(e.From, e.ID, 0)
+	if !ok || string(got.Content) != string(e.Content) {
+		t.Fatal(got, ok)
+	}
+	got.Content[0] = 'x'
+	again, ok := tr.PendingMessage(e.From, e.ID, 1)
+	if !ok || string(again.Content) != string(e.Content) {
+		t.Fatal("retry snapshot was borrowed", again)
+	}
+	if _, ok := tr.PendingMessage("other sender", e.ID, 1); ok {
+		t.Fatal("cross-sender lookup")
+	}
+	if _, ok := tr.PendingMessage(e.From, e.ID, 2); ok {
+		t.Fatal("cross-revision lookup")
+	}
+	failed := receipt("m", "failed", "")
+	failed.Reason = &Reason{Code: 1}
+	if err := tr.Apply(failed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tr.PendingMessage(e.From, e.ID, 1); ok {
+		t.Fatal("failed revision became retryable")
+	}
+	if err := tr.Resolve(e); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tr.PendingMessage(e.From, e.ID, 1); ok {
+		t.Fatal("resolved revision became retryable")
+	}
+	next := deliveryMessage("next", "t")
+	_ = tr.Track(next)
+	_ = tr.Apply(receipt("next", "received", ""))
+	if _, ok := tr.PendingMessage(next.From, next.ID, 1); ok {
+		t.Fatal("received revision became retryable")
+	}
+}

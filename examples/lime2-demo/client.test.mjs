@@ -295,14 +295,19 @@ test("JSON sender and reconnection/fetch failures", async () => {
   l.get("json").onclick();
   assert.equal(s.sent.at(-2).stream, "start");
   assert.equal(s.sent.at(-1).stream, "data");
+  const messageID = s.sent.at(-1).id;
   l.timers.shift()();
   assert.equal(s.sent.at(-1).stream, "end");
   l.get("retry").onclick();
-  assert.deepEqual(s.sent.at(-1).content, {
-    text: "Choose a topic",
-    options: ["Payments"],
+  assert.equal(s.sent.at(-1).uri, "/messages/delivery");
+  assert.equal(s.sent.at(-1).method, "set");
+  assert.deepEqual(s.sent.at(-1).resource, { id: messageID, rev: 1 });
+  s.deliver({
+    id: s.sent.at(-1).id,
+    method: "set",
+    status: "success",
+    resource: { pending: [] },
   });
-  s.deliver({ id: s.sent.at(-1).id, event: "received" });
   l.get("json").onclick();
   s.close();
   l.timers.shift()();
@@ -594,7 +599,7 @@ test("session receipts clear only the acknowledging recipient's delivery prefix"
   const beforeWrong = s.sent.length;
   l.get("retry").onclick();
   assert.deepEqual(
-    s.sent.slice(beforeWrong).map((e) => e.id),
+    s.sent.slice(beforeWrong).map((e) => e.resource.id),
     [first, other, marker],
   );
   s.deliver({ id: marker, from: "bob", event: "received" });
@@ -603,7 +608,7 @@ test("session receipts clear only the acknowledging recipient's delivery prefix"
   const before = s.sent.length;
   l.get("retry").onclick();
   assert.deepEqual(
-    s.sent.slice(before).map((e) => e.id),
+    s.sent.slice(before).map((e) => e.resource.id),
     [other],
   );
   // A gap to another recipient cannot block Bob's session prefix.
@@ -643,6 +648,7 @@ test("manual message receipts and notification histories remain bounded", async 
   ]);
   l.get("autoReceipt").checked = true;
   l.get("live").checked = false;
+  l.get("recipient").value = "bob";
   for (let i = 0; i < 258; i++) {
     l.get("send").onclick();
     s.deliver({ id: s.sent.at(-1).id, event: "received" });
@@ -660,4 +666,109 @@ test("manual message receipts and notification histories remain bounded", async 
   }
   assert.equal(s.readyState, 3);
   assert.match(l.get("state").textContent, /Delivery history limit/);
+});
+
+test("broadcast payloads remain pending until all original recipients acknowledge", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("live").checked = false;
+  l.get("text").value = "broadcast";
+  l.get("send").onclick();
+  const messageID = s.sent.at(-1).id;
+  s.deliver({ id: messageID, from: "bob", event: "received" });
+  const query = s.sent.at(-1);
+  assert.equal(query.method, "get");
+  assert.deepEqual(query.resource, { id: messageID, rev: 1 });
+  s.deliver({
+    id: query.id,
+    method: "get",
+    status: "success",
+    resource: { pending: ["carol"] },
+  });
+  assert.match(l.get("state").textContent, /Waiting for 1/);
+  // Changes to the selector cannot change the original broadcast's recipients.
+  l.get("recipient").value = "dave";
+  l.get("retry").onclick();
+  const retry = s.sent.at(-1);
+  assert.equal(retry.method, "set");
+  assert.equal(retry.uri, "/messages/delivery");
+  assert.deepEqual(retry.resource, { id: messageID, rev: 1 });
+  s.deliver({ id: messageID, from: "carol", event: "received" });
+  // A stale status reply cannot resurrect a received payload.
+  s.deliver({
+    id: retry.id,
+    method: "set",
+    status: "success",
+    resource: { pending: ["carol"] },
+  });
+  assert.match(l.get("state").textContent, /All original recipients/);
+  const before = s.sent.length;
+  l.get("retry").onclick();
+  assert.equal(s.sent.length, before);
+});
+
+test("broadcast cumulative receipts retain other peers and merge receipt/status races", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("live").checked = false;
+  l.get("send").onclick();
+  const first = s.sent.at(-1).id;
+  l.get("recipient").value = "bob";
+  l.get("send").onclick();
+  const marker = s.sent.at(-1).id;
+  s.deliver({ id: marker, from: "bob", event: "received", scope: "session" });
+  const query = s.sent.at(-1);
+  assert.equal(query.resource.id, first);
+  const count = s.sent.length;
+  s.deliver({ id: first, from: "carol", event: "received" });
+  assert.equal(s.sent.length, count); // One in-flight query per revision.
+  s.deliver({
+    id: query.id,
+    method: "get",
+    status: "success",
+    resource: { pending: ["carol"] },
+  });
+  l.get("retry").onclick();
+  assert.equal(s.sent.length, count);
+  // Failed status queries leave the broadcast retry payload intact.
+  l.get("recipient").value = "";
+  l.get("send").onclick();
+  const next = s.sent.at(-1).id;
+  s.deliver({ id: next, from: "bob", event: "received" });
+  s.deliver({
+    id: s.sent.at(-1).id,
+    method: "get",
+    status: "failure",
+    reason: { description: "unavailable" },
+  });
+  assert.match(l.get("state").textContent, /unavailable/);
+  l.get("retry").onclick();
+  assert.equal(s.sent.at(-1).resource.id, next);
+});
+
+test("confirmed delivery completion remains terminal across reordered status replies", async () => {
+  const l = lab(),
+    s = await l.connect();
+  l.get("live").checked = false;
+  l.get("send").onclick();
+  l.get("retry").onclick();
+  const older = s.sent.at(-1);
+  l.get("retry").onclick();
+  const newer = s.sent.at(-1);
+  s.deliver({
+    id: newer.id,
+    method: "set",
+    status: "success",
+    resource: { pending: [] },
+  });
+  s.deliver({
+    id: older.id,
+    method: "set",
+    status: "success",
+    resource: { pending: ["carol"] },
+  });
+  assert.match(l.get("state").textContent, /All original recipients/);
+  const count = s.sent.length;
+  l.get("retry").onclick();
+  assert.equal(s.sent.length, count);
 });

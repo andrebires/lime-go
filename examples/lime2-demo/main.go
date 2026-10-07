@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	_ "embed"
@@ -36,14 +37,28 @@ type capability struct {
 	node, token string
 	expires     time.Time
 }
+type streamRoute struct {
+	targets []*peer
+	active  []*peer // Only recipients whose start was successfully sent.
+}
+type delivery struct {
+	id       string
+	rev      uint64
+	nodes    []string
+	received map[string]bool
+	complete bool
+}
 type peer struct {
-	sendMu    sync.Mutex
-	node      string
-	conn      *lime.Conn
-	assembler *lime.Assembler
-	registry  *lime.Registry
-	tracker   *lime.Tracker
-	routes    map[string][]*peer
+	sendMu        sync.Mutex
+	node          string
+	conn          *lime.Conn
+	assembler     *lime.Assembler
+	registry      *lime.Registry
+	tracker       *lime.Tracker
+	routes        map[string]*streamRoute
+	deliveryMu    sync.Mutex
+	deliveries    map[string]*delivery
+	deliveryOrder []string
 }
 type hub struct {
 	closed       bool
@@ -159,7 +174,7 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 	registry, _ := lime.NewRegistry(lime.Limits{})
 	assembly, _ := lime.NewAssembler(registry, lime.Limits{})
 	tracker, _ := lime.NewTracker(info.Remote, lime.Limits{})
-	p := &peer{node: info.Remote, conn: c, registry: registry, assembler: assembly, tracker: tracker, routes: make(map[string][]*peer)}
+	p := &peer{node: info.Remote, conn: c, registry: registry, assembler: assembly, tracker: tracker, routes: make(map[string]*streamRoute), deliveries: make(map[string]*delivery)}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -167,6 +182,11 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	h.peers[slot] = p
 	h.mu.Unlock()
+	defer func() {
+		for key := range p.routes {
+			p.abortStream(key)
+		}
+	}()
 	for {
 		e, err := c.Receive(r.Context())
 		if err != nil {
@@ -189,7 +209,7 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 			if e.Status != "" {
 				continue
 			}
-			resp := h.command(p, e)
+			resp := h.command(r.Context(), p, e)
 			if err = c.Send(r.Context(), resp); err != nil {
 				return
 			}
@@ -199,6 +219,7 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if target := h.find(e.To); target != nil {
+				target.acknowledge(e)
 				if err = target.conn.Send(r.Context(), e); err != nil {
 					_ = target.conn.Close()
 				}
@@ -206,7 +227,7 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 		case lime.Message:
 			if err = h.message(r.Context(), p, e); err != nil {
 				p.assembler.Discard(e)
-				delete(p.routes, messageKey(e))
+				p.abortStream(messageKey(e))
 				if e.ID == "" {
 					_ = c.Send(r.Context(), lime.Envelope{ID: info.ID, State: "failed", Reason: &lime.Reason{Code: lime.InvalidInput, Description: err.Error()}})
 					return
@@ -241,33 +262,118 @@ func (h *hub) destinations(p *peer, to string) []*peer {
 	return out
 }
 func messageKey(e lime.Envelope) string { return fmt.Sprintf("%s/%d", e.ID, e.Revision()) }
+func (p *peer) abortStream(key string) {
+	if route := p.routes[key]; route != nil {
+		// LIME has no abort-stream signal. Closing these sessions abandons assembly
+		// honestly, without issuing an end frame or a receipt for partial content.
+		for _, target := range route.active {
+			_ = target.conn.Close()
+		}
+		delete(p.routes, key)
+	}
+}
+func (p *peer) reserveDelivery(e lime.Envelope, targets []*peer) error {
+	if e.ID == "" {
+		return nil
+	}
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	key := messageKey(e)
+	if old := p.deliveries[key]; old != nil {
+		return nil
+	}
+	if len(p.deliveryOrder) >= 256 {
+		retired := -1
+		for i, k := range p.deliveryOrder {
+			item := p.deliveries[k]
+			if item.complete && len(item.received) == len(item.nodes) {
+				retired = i
+				break
+			}
+		}
+		if retired < 0 {
+			return errors.New("sender delivery limit exceeded")
+		}
+		delete(p.deliveries, p.deliveryOrder[retired])
+		p.deliveryOrder = append(p.deliveryOrder[:retired], p.deliveryOrder[retired+1:]...)
+	}
+	nodes := make([]string, len(targets))
+	for i, target := range targets {
+		nodes[i] = target.node
+	}
+	p.deliveries[key] = &delivery{id: e.ID, rev: e.Revision(), nodes: nodes, received: make(map[string]bool), complete: e.Stream == ""}
+	p.deliveryOrder = append(p.deliveryOrder, key)
+	return nil
+}
+func (p *peer) acknowledge(n lime.Envelope) {
+	if n.Event != "received" {
+		return
+	}
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	marker := messageKey(n)
+	if p.deliveries[marker] == nil {
+		return
+	} // Duplicate retired marker.
+	for _, k := range p.deliveryOrder {
+		item := p.deliveries[k]
+		if n.NotificationScope() == "session" || k == marker {
+			for _, node := range item.nodes {
+				if node == n.From {
+					item.received[node] = true
+				}
+			}
+		}
+		if k == marker {
+			break
+		}
+	}
+}
 func (h *hub) message(ctx context.Context, p *peer, e lime.Envelope) error {
 	result, err := p.assembler.Apply(e)
 	if err != nil {
 		return err
 	}
-	// Resolve sender aliases before routing; registries belong to different sessions.
 	if e.Stream == "" || e.Stream == "start" {
 		e.Type = result.Message.Type
 	}
 	key := messageKey(e)
 	var recipients []*peer
 	if e.Stream == "" || e.Stream == "start" {
-		recipients = h.destinations(p, e.To)
+		// A retry retains the original recipients, even after the peer roster changes.
+		p.deliveryMu.Lock()
+		old := p.deliveries[key]
+		var names []string
+		if old != nil {
+			names = append(names, old.nodes...)
+		}
+		p.deliveryMu.Unlock()
+		if names != nil {
+			for _, node := range names {
+				target := h.find(node)
+				if target == nil {
+					return errors.New("original recipient session ended")
+				}
+				recipients = append(recipients, target)
+			}
+		} else {
+			recipients = h.destinations(p, e.To)
+		}
 		if len(recipients) == 0 {
 			return errors.New("destination unavailable")
 		}
+		if err = p.reserveDelivery(e, recipients); err != nil {
+			return err
+		}
 		if e.Stream == "start" {
-			p.routes[key] = recipients
+			p.routes[key] = &streamRoute{targets: recipients}
 		}
 	} else {
-		recipients = p.routes[key]
-		if len(recipients) == 0 {
+		route := p.routes[key]
+		if route == nil {
 			return errors.New("stream destination unavailable")
 		}
-	}
-	if e.Stream == "end" {
-		delete(p.routes, key)
+		recipients = route.targets
 	}
 	for _, target := range recipients {
 		target.sendMu.Lock()
@@ -285,8 +391,6 @@ func (h *hub) message(ctx context.Context, p *peer, e lime.Envelope) error {
 			}
 		}
 		if result.Duplicate {
-			// Retry the completed revision atomically; receiver suppresses redisplay and
-			// emits its receipt again. Never replay old chunks.
 			outgoing = result.Message
 			outgoing.To = target.node
 		}
@@ -296,17 +400,117 @@ func (h *hub) message(ctx context.Context, p *peer, e lime.Envelope) error {
 			_ = target.conn.Close()
 			return err
 		}
+		if e.Stream == "start" {
+			p.routes[key].active = append(p.routes[key].active, target)
+		}
+		if e.Stream == "end" {
+			p.routes[key].active = p.routes[key].active[1:]
+		}
+	}
+	if result.Complete && e.ID != "" {
+		p.deliveryMu.Lock()
+		p.deliveries[key].complete = true
+		p.deliveryMu.Unlock()
+	}
+	if e.Stream == "end" {
+		delete(p.routes, key)
 	}
 	return nil
 }
-func (h *hub) command(p *peer, e lime.Envelope) lime.Envelope {
+
+// The demo owns the original fan-out snapshot. Status/retry never infer success
+// from the current peer roster or add a new session to an existing broadcast.
+const deliveryURI = "/messages/delivery"
+
+func (h *hub) deliveryCommand(ctx context.Context, p *peer, e lime.Envelope) (json.RawMessage, error) {
+	if (e.Method != "get" && e.Method != "set") || e.Type != "json" || e.Resource == nil {
+		return nil, errors.New("use get for status or set for retry with type json and resource {id,rev}")
+	}
+	var input struct {
+		ID  string  `json:"id"`
+		Rev *uint64 `json:"rev"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(e.Resource))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return nil, err
+	}
+	revision := uint64(1)
+	if input.Rev != nil {
+		revision = *input.Rev
+	}
+	if input.ID == "" || revision == 0 || revision > 9007199254740991 {
+		return nil, errors.New("valid message id and revision required")
+	}
+	key := fmt.Sprintf("%s/%d", input.ID, revision)
+	p.deliveryMu.Lock()
+	item := p.deliveries[key]
+	if item == nil {
+		p.deliveryMu.Unlock()
+		return nil, errors.New("unknown delivery marker")
+	}
+	pending := make([]string, 0, len(item.nodes))
+	for _, node := range item.nodes {
+		if !item.received[node] {
+			pending = append(pending, node)
+		}
+	}
+	complete := item.complete
+	p.deliveryMu.Unlock()
+	if e.Method == "set" {
+		if !complete {
+			return nil, errors.New("retry requires a complete message")
+		}
+		for _, node := range pending {
+			target := h.find(node)
+			if target == nil {
+				return nil, errors.New("original recipient session ended without receipt; reconnect abandons this delivery")
+			}
+			target.sendMu.Lock()
+			message, retryable := target.tracker.PendingMessage(p.node, input.ID, revision)
+			if retryable {
+				err := target.conn.Send(ctx, message)
+				target.sendMu.Unlock()
+				if err != nil {
+					_ = target.conn.Close()
+					return nil, err
+				}
+			} else {
+				target.sendMu.Unlock()
+				p.deliveryMu.Lock()
+				received := item.received[node]
+				p.deliveryMu.Unlock()
+				if !received {
+					return nil, errors.New("recipient has no complete retryable message")
+				}
+			}
+		}
+	}
+	return json.Marshal(struct {
+		ID      string   `json:"id"`
+		Rev     uint64   `json:"rev"`
+		Pending []string `json:"pending"`
+	}{input.ID, revision, pending})
+}
+func (h *hub) command(ctx context.Context, p *peer, e lime.Envelope) lime.Envelope {
 	if e.URI == lime.AliasURI {
 		return p.registry.AliasCommand(e)
 	}
 	resp := lime.Envelope{ID: e.ID, Method: e.Method, To: p.node, Status: "success"}
+	if e.URI == deliveryURI {
+		resource, err := h.deliveryCommand(ctx, p, e)
+		if err != nil {
+			resp.Status = "failure"
+			resp.Reason = &lime.Reason{Code: lime.InvalidInput, Description: err.Error()}
+		} else {
+			resp.Type = "json"
+			resp.Resource = resource
+		}
+		return resp
+	}
 	if e.URI != "/peers" || e.Method != "get" {
 		resp.Status = "failure"
-		resp.Reason = &lime.Reason{Code: lime.UnsupportedOperation, Description: "use get /peers or /protocol/aliases"}
+		resp.Reason = &lime.Reason{Code: lime.UnsupportedOperation, Description: "use /peers, /protocol/aliases or /messages/delivery"}
 		return resp
 	}
 	peers := h.destinations(p, "")

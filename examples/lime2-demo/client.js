@@ -58,7 +58,10 @@ function controls(connected) {
 }
 function request(uri, method = "get", resource) {
   const id = crypto.randomUUID();
-  commands.set(id, uri);
+  commands.set(id, {
+    uri,
+    key: resource?.id ? resource.id + "/" + (resource.rev || 1) : "",
+  });
   const e = { id, method, uri };
   if (resource) {
     e.type = "json";
@@ -168,9 +171,26 @@ function rememberSent(e, done) {
       const retired = [...sentOrder.keys()].find((id) => !pending.has(id));
       sentOrder.delete(retired);
     }
-    sentOrder.set(k, { to: e.to || "", done, failed: false });
+    sentOrder.set(k, {
+      to: e.to || "",
+      done,
+      failed: false,
+      received: new Set(),
+      awaiting: null,
+      query: false,
+    });
   } else sentOrder.get(k).done = done;
   pending.set(k, done ? e : null);
+}
+function queryDelivery(k, method = "get") {
+  const item = sentOrder.get(k);
+  if (method === "get" && item.query) return;
+  item.query = true;
+  const slash = k.lastIndexOf("/");
+  request("/messages/delivery", method, {
+    id: k.slice(0, slash),
+    rev: Number(k.slice(slash + 1)),
+  });
 }
 function applyReceipt(e) {
   const k = e.id + "/" + (e.rev || 1),
@@ -189,7 +209,17 @@ function applyReceipt(e) {
     status("Rejected receipt watermark with incomplete gap or failed delivery");
     return false;
   }
-  for (const id of covered) pending.delete(id);
+  for (const id of covered) {
+    const item = sentOrder.get(id);
+    if (item.to) pending.delete(id);
+    else {
+      item.received.add(peer);
+      if (item.awaiting) {
+        item.awaiting.delete(peer);
+        if (!item.awaiting.size) pending.delete(id);
+      } else queryDelivery(id);
+    }
+  }
   if (pending.size < 256) $("send").disabled = false;
   return true;
 }
@@ -241,10 +271,27 @@ function handle(e) {
     return;
   }
   if (e.method) {
-    const uri = commands.get(e.id);
+    const command = commands.get(e.id),
+      uri = command?.uri;
     commands.delete(e.id);
+    const delivery = command?.key ? sentOrder.get(command.key) : null;
+    if (delivery) delivery.query = false;
     if (e.status === "failure") {
       status("Command failed: " + e.reason?.description);
+      return;
+    }
+    if (uri === "/messages/delivery" && delivery) {
+      if (!delivery.awaiting || delivery.awaiting.size || !delivery.done)
+        delivery.awaiting = new Set(
+          e.resource.pending.filter((peer) => !delivery.received.has(peer)),
+        );
+      if (!delivery.awaiting.size && delivery.done) pending.delete(command.key);
+      if (pending.size < 256) $("send").disabled = false;
+      status(
+        delivery.awaiting.size
+          ? "Waiting for " + delivery.awaiting.size + " original recipient(s)"
+          : "All original recipients acknowledged",
+      );
       return;
     }
     if (uri === "/peers") {
@@ -509,7 +556,7 @@ $("read").onclick = () => {
   );
 };
 $("retry").onclick = () => {
-  for (const e of pending.values()) if (e) send(e);
+  for (const [k, e] of pending) if (e) queryDelivery(k, "set");
 };
 
 function admit() {

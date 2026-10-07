@@ -43,6 +43,22 @@ original senders sends each origin its latest covered marker. Notification statu
 and the wire viewer display the scope, exact message ID and revision.
 See [scoped notification browser evidence](docs/demo-scoped-notifications.jpg).
 
+Broadcast retry state remains pending until every original recipient acknowledges.
+The demo command `get /messages/delivery` with JSON resource `{"id":"m1","rev":1}`
+reports outstanding recipient nodes; `set` on the same resource retries their
+retained complete revisions. The Retry button uses that command, so a new peer
+never joins an old broadcast and acknowledged peers receive no replay. Missing
+recipient sessions remain outstanding; reconnect abandons session-local state.
+The sender retains at most 256 delivery records and never evicts an unacknowledged
+record. Retrying one revision copies only that revision's payload.
+See [broadcast retry browser evidence](docs/demo-review-fixes.jpg).
+
+If a fan-out fails after stream start, the demo closes only recipient sessions
+that still hold the affected partial stream. This also applies when the sender
+disconnects or sends invalid stream data. LIME has no stream-abort signal; closing
+the session makes interruption visible and clears assembly without issuing a
+false end or receipt. Recipients that already completed end stay connected.
+
 The demo listens on loopback only (override with `-addr 127.0.0.1:8087`). It uses
 short-lived one-use anonymous capabilities with LIME's existing plain/base64
 credential convention. Credentials do not enter URLs or the wire log. Every tab

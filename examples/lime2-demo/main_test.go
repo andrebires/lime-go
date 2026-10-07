@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	lime "github.com/andrebires/lime-go/v2"
 	"github.com/gorilla/websocket"
 	"io"
@@ -448,5 +449,306 @@ func TestScopedNotificationGaps(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func deliveryRequest(t *testing.T, c testClient, method, id string, rev uint64) lime.Envelope {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]any{"id": id, "rev": rev})
+	send(t, c, lime.Envelope{ID: "delivery-status", Method: method, URI: deliveryURI, Type: "json", Resource: raw})
+	response := receive(t, c)
+	if response.ID != "delivery-status" {
+		t.Fatal("unexpected delivery response", response)
+	}
+	return response
+}
+func pendingNodes(t *testing.T, e lime.Envelope) []string {
+	t.Helper()
+	if e.Status != "success" {
+		t.Fatal(e)
+	}
+	var body struct {
+		Pending []string `json:"pending"`
+	}
+	if err := json.Unmarshal(e.Resource, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Pending
+}
+func TestBroadcastRetryUsesEveryOriginalRecipient(t *testing.T) {
+	_, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	send(t, a, lime.Envelope{ID: "broadcast-retry", Rev: 2, Thread: "t", Type: "json", Stream: "start"})
+	for _, recipient := range []testClient{b, c} {
+		if got := receive(t, recipient); got.Stream != "start" {
+			t.Fatal(got)
+		}
+	}
+	if response := deliveryRequest(t, a, "set", "broadcast-retry", 2); response.Status != "failure" || !strings.Contains(response.Reason.Description, "complete") {
+		t.Fatal(response)
+	}
+	for _, e := range []lime.Envelope{
+		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`{"x":1,"delete":true}`)},
+		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`{"delete":null,"y":2}`)},
+		{ID: "broadcast-retry", Rev: 2, Stream: "end"},
+	} {
+		send(t, a, e)
+		for _, recipient := range []testClient{b, c} {
+			if got := receive(t, recipient); got.Stream != e.Stream {
+				t.Fatal(got)
+			}
+		}
+	}
+	send(t, b, lime.Envelope{ID: "broadcast-retry", Rev: 2, To: a.node, Event: "received"})
+	if got := receive(t, a); got.From != b.node {
+		t.Fatal(got)
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "broadcast-retry", 2)); len(nodes) != 1 || nodes[0] != c.node {
+		t.Fatal(nodes)
+	}
+	joined := client(t, s)
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "set", "broadcast-retry", 2)); len(nodes) != 1 || nodes[0] != c.node {
+		t.Fatal(nodes)
+	}
+	retry := receive(t, c)
+	if retry.ID != "broadcast-retry" || retry.Rev != 2 || retry.Stream != "" || retry.To != c.node || string(retry.Content) != `{"x":1,"y":2}` {
+		t.Fatal(retry)
+	}
+	// Acknowledged and newly joined peers receive no replay.
+	for _, other := range []testClient{b, joined} {
+		send(t, other, lime.Envelope{ID: "barrier", Method: "get", URI: "/peers"})
+		if got := receive(t, other); got.ID != "barrier" {
+			t.Fatal("retry reached wrong peer", got)
+		}
+	}
+	send(t, c, lime.Envelope{ID: "broadcast-retry", Rev: 2, To: a.node, Event: "received", Scope: "session"})
+	if got := receive(t, a); got.Scope != "session" || got.From != c.node {
+		t.Fatal(got)
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "broadcast-retry", 2)); len(nodes) != 0 {
+		t.Fatal(nodes)
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "set", "broadcast-retry", 2)); len(nodes) != 0 {
+		t.Fatal(nodes)
+	}
+}
+func TestDisconnectedBroadcastRecipientIsNotAcknowledged(t *testing.T) {
+	_, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	send(t, a, lime.Envelope{ID: "disconnect-broadcast", Type: "text", Content: []byte(`"original"`)})
+	_ = receive(t, b)
+	_ = receive(t, c)
+	send(t, b, lime.Envelope{ID: "disconnect-broadcast", To: a.node, Event: "received"})
+	_ = receive(t, a)
+	send(t, c, lime.Envelope{ID: c.session, State: "finishing"})
+	_ = receive(t, c)
+	// A new node never replaces the unacknowledged original session.
+	joined := client(t, s)
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "disconnect-broadcast", 1)); len(nodes) != 1 || nodes[0] != c.node {
+		t.Fatal(nodes)
+	}
+	if got := deliveryRequest(t, a, "set", "disconnect-broadcast", 1); got.Status != "failure" {
+		t.Fatal("disconnected recipient treated as success", got)
+	}
+	send(t, joined, lime.Envelope{ID: "barrier", Method: "get", URI: "/peers"})
+	if got := receive(t, joined); got.ID != "barrier" {
+		t.Fatal(got)
+	}
+	// Whole-message retries also retain the frozen original recipient list.
+	send(t, a, lime.Envelope{ID: "disconnect-broadcast", Type: "text", Content: []byte(`"original"`)})
+	if got := receive(t, a); got.Event != "failed" {
+		t.Fatal(got)
+	}
+}
+func TestPartialBroadcastStartFailureClosesOnlyStartedRecipients(t *testing.T) {
+	h, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	if b.node > c.node {
+		b, c = c, b
+	}
+	congested := h.find(c.node)
+	for i := 0; i < 256; i++ {
+		if err := congested.tracker.Track(lime.Envelope{ID: fmt.Sprintf("busy-%d", i), From: a.node, To: c.node, Type: "text/plain", Content: []byte(`"busy"`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(t, a, lime.Envelope{ID: "partial", Type: "text", Stream: "start"})
+	if got := receive(t, b); got.Stream != "start" {
+		t.Fatal(got)
+	}
+	if got := receive(t, a); got.Event != "failed" || !strings.Contains(got.Reason.Description, "limit") {
+		t.Fatal(got)
+	}
+	if _, err := b.conn.Receive(timeout(t)); err == nil {
+		t.Fatal("orphan stream session stayed alive")
+	}
+	send(t, c, lime.Envelope{ID: "alive", Method: "get", URI: "/peers"})
+	if got := receive(t, c); got.ID != "alive" {
+		t.Fatal("unstarted recipient closed", got)
+	}
+}
+func TestPartialBroadcastTransportFailureClosesActiveStreams(t *testing.T) {
+	_, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	if b.node > c.node {
+		b, c = c, b
+	}
+	send(t, a, lime.Envelope{ID: "transport", Type: "text", Stream: "start"})
+	_ = receive(t, b)
+	_ = receive(t, c)
+	_ = c.conn.Close()
+	send(t, a, lime.Envelope{ID: "transport", Stream: "data", Content: []byte(`"partial"`)})
+	if got := receive(t, b); got.Stream != "data" {
+		t.Fatal(got)
+	}
+	if got := receive(t, a); got.Event != "failed" {
+		t.Fatal(got)
+	}
+	if _, err := b.conn.Receive(timeout(t)); err == nil {
+		t.Fatal("active stream survived partial transport failure")
+	}
+}
+func TestPartialBroadcastEndFailurePreservesCompletedRecipients(t *testing.T) {
+	h, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	if b.node > c.node {
+		b, c = c, b
+	}
+	congested := h.find(c.node)
+	for i := 0; i < 8; i++ {
+		size := (1 << 20) - 2
+		if i == 7 {
+			size--
+		}
+		content := append([]byte{'"'}, bytes.Repeat([]byte{'x'}, size)...)
+		content = append(content, '"')
+		if err := congested.tracker.Track(lime.Envelope{ID: fmt.Sprintf("bytes-%d", i), From: a.node, To: c.node, Type: "text/plain", Content: content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, e := range []lime.Envelope{{ID: "end-failure", Type: "text", Stream: "start"}, {ID: "end-failure", Stream: "data", Content: []byte(`"complete for the healthy peer"`)}} {
+		send(t, a, e)
+		_ = receive(t, b)
+		_ = receive(t, c)
+	}
+	send(t, a, lime.Envelope{ID: "end-failure", Stream: "end"})
+	if got := receive(t, b); got.Stream != "end" {
+		t.Fatal(got)
+	}
+	if got := receive(t, a); got.Event != "failed" || !strings.Contains(got.Reason.Description, "byte limit") {
+		t.Fatal(got)
+	}
+	if _, err := c.conn.Receive(timeout(t)); err == nil {
+		t.Fatal("unfinished recipient stayed connected")
+	}
+	send(t, b, lime.Envelope{ID: "completed-alive", Method: "get", URI: "/peers"})
+	if got := receive(t, b); got.ID != "completed-alive" {
+		t.Fatal("completed recipient closed", got)
+	}
+}
+func TestSenderDisconnectAbandonsRoutedStreams(t *testing.T) {
+	_, s := demo(t)
+	a, b := client(t, s), client(t, s)
+	send(t, a, lime.Envelope{ID: "abandoned", To: b.node, Type: "text", Stream: "start"})
+	_ = receive(t, b)
+	_ = a.conn.Close()
+	if _, err := b.conn.Receive(timeout(t)); err == nil {
+		t.Fatal("sender disconnect orphaned a live stream")
+	}
+}
+func TestDeliveryCommandsValidateAndIsolateMarkers(t *testing.T) {
+	_, s := demo(t)
+	a, b := client(t, s), client(t, s)
+	send(t, a, lime.Envelope{ID: "owned", To: b.node, Type: "text", Content: []byte(`"owned"`)})
+	_ = receive(t, b)
+	for _, e := range []lime.Envelope{
+		{Method: "delete", Type: "json", Resource: []byte(`{"id":"owned"}`)},
+		{Method: "get"},
+		{Method: "get", Type: "text", Resource: []byte(`"owned"`)},
+		{Method: "get", Type: "json", Resource: []byte(`{"id":"owned","extra":true}`)},
+		{Method: "get", Type: "json", Resource: []byte(`{"id":"owned","rev":0}`)},
+		{Method: "get", Type: "json", Resource: []byte(`{"id":"owned","rev":9007199254740992}`)},
+		{Method: "get", Type: "json", Resource: []byte(`{"id":""}`)},
+		{Method: "get", Type: "json", Resource: []byte(`{"id":"unknown"}`)},
+	} {
+		e.ID = "invalid"
+		e.URI = deliveryURI
+		send(t, a, e)
+		if got := receive(t, a); got.Status != "failure" || got.Reason == nil {
+			t.Fatal(got)
+		}
+	}
+	send(t, a, lime.Envelope{ID: "default-rev", Method: "get", URI: deliveryURI, Type: "json", Resource: []byte(`{"id":"owned"}`)})
+	if nodes := pendingNodes(t, receive(t, a)); len(nodes) != 1 || nodes[0] != b.node {
+		t.Fatal(nodes)
+	}
+	if got := deliveryRequest(t, b, "get", "owned", 1); got.Status != "failure" {
+		t.Fatal("cross-sender access", got)
+	}
+	send(t, b, lime.Envelope{ID: "owned", To: a.node, Event: "failed", Reason: &lime.Reason{Code: lime.InvalidInput}})
+	_ = receive(t, a)
+	if got := deliveryRequest(t, a, "set", "owned", 1); got.Status != "failure" {
+		t.Fatal("failed delivery retried", got)
+	}
+}
+func TestSenderDeliveryWindowRetiresOnlyAcknowledgedMarkers(t *testing.T) {
+	_, s := demo(t)
+	a, b, c := client(t, s), client(t, s), client(t, s)
+	for i := 0; i < 257; i++ {
+		id := fmt.Sprintf("window-%d", i)
+		target := c
+		if i == 0 {
+			target = b
+		}
+		send(t, a, lime.Envelope{ID: id, To: target.node, Type: "text", Content: []byte(`"window"`)})
+		_ = receive(t, target)
+		if i != 0 {
+			send(t, target, lime.Envelope{ID: id, To: a.node, Event: "received"})
+			_ = receive(t, a)
+		}
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "window-0", 1)); len(nodes) != 1 {
+		t.Fatal("unreceived marker evicted", nodes)
+	}
+	if got := deliveryRequest(t, a, "get", "window-1", 1); got.Status != "failure" {
+		t.Fatal("old received marker did not retire", got)
+	}
+}
+
+func TestSenderDeliveryLimitPreservesUnreceivedMessages(t *testing.T) {
+	_, s := demo(t)
+	a, b := client(t, s), client(t, s)
+	for i := 0; i < 256; i++ {
+		send(t, a, lime.Envelope{ID: fmt.Sprintf("unreceived-%d", i), To: b.node, Type: "text", Content: []byte(`"unreceived"`)})
+		_ = receive(t, b)
+	}
+	send(t, a, lime.Envelope{ID: "overflow", To: b.node, Type: "text", Content: []byte(`"overflow"`)})
+	if got := receive(t, a); got.Event != "failed" || !strings.Contains(got.Reason.Description, "sender delivery limit") {
+		t.Fatal(got)
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "unreceived-0", 1)); len(nodes) != 1 {
+		t.Fatal("capacity dropped pending delivery", nodes)
+	}
+	send(t, b, lime.Envelope{ID: "still-alive", Method: "get", URI: "/peers"})
+	if got := receive(t, b); got.ID != "still-alive" {
+		t.Fatal("over-limit message was forwarded", got)
+	}
+}
+func TestCanceledRetryRetainsDeliveryAndClosesFailedTransport(t *testing.T) {
+	h, s := demo(t)
+	a, b := client(t, s), client(t, s)
+	send(t, a, lime.Envelope{ID: "canceled", To: b.node, Type: "text", Content: []byte(`"canceled"`)})
+	_ = receive(t, b)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	response := h.command(ctx, h.find(a.node), lime.Envelope{ID: "cancel-retry", Method: "set", URI: deliveryURI, Type: "json", Resource: []byte(`{"id":"canceled"}`)})
+	if response.Status != "failure" || !strings.Contains(response.Reason.Description, "context canceled") {
+		t.Fatal(response)
+	}
+	if _, err := b.conn.Receive(timeout(t)); err == nil {
+		t.Fatal("canceled retry left failed transport open")
+	}
+	if nodes := pendingNodes(t, deliveryRequest(t, a, "get", "canceled", 1)); len(nodes) != 1 || nodes[0] != b.node {
+		t.Fatal("cancellation acknowledged delivery", nodes)
 	}
 }

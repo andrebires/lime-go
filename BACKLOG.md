@@ -1,5 +1,23 @@
 # Implementation backlog
 
+## LIME2-T03 — Address PR review and merge verified implementation
+
+- Status: Verified; delivery and merge state tracked in [PR #1](https://github.com/andrebires/lime-go/pull/1).
+- Authority: user request to handle PR #1 comments and merge when green.
+- Outcome: aliases require usable schemas; broadcast retry state remains tied to
+  every original recipient; failed fan-out cannot leave live orphan streams.
+- Acceptance: regression tests cover all three review findings, partial transport
+  failures and cumulative broadcast receipts; verification and CI pass, review
+  threads are addressed, and the verified head is merged into master.
+- Excludes: new wire events, reconnect/resume, persistent retry storage.
+- Evidence: local formatting/vet/build/race/integration/frontend verification
+  passed; full PR changed-line coverage 2193/2276 (96.35%). Browser client
+  coverage is 100% lines/functions and 96.20% branches. Regressions cover schema
+  registration, outstanding broadcast recipients, frozen routing, disconnects,
+  start/data/end fan-out failures, capacity, cancellation and reordered status
+  replies. Three live clients verified selective whole-message retry and final
+  cumulative receipt; [screenshot](docs/demo-review-fixes.jpg).
+
 ## LIME2-T02 — Demonstrate cumulative notification scopes
 
 - Status: Done
