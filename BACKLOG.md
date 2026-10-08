@@ -71,3 +71,12 @@
   clients verified live text broadcast, JSON patches and received/consumed
   notifications; [screenshot](docs/demo-browser.jpg). Allocation/codec baseline
   comparisons are recorded in [performance evidence](docs/performance.md).
+
+## LIME2-T05 — Stream command requests and responses
+
+- Status: Completed
+- Authority: user request, 2026-10-08; draft sections 7.0/7.2, ADR 0003.
+- Outcome: strict text/JSON Patch command streams in both directions, independent correlated assembly and terminal status, complete command interoperability.
+- Acceptance: no application invocation before request end; peer/method/direction isolation; bounded exchanges, resource/work limits and caller-controlled timeout/disconnect cleanup; no message receipts/retries; shared fixtures, WebSocket integration, race/vet/build and >=90% changed coverage.
+- Excludes: new capability grammar, automatic retries, cancellation wire fields, durable execution claims and fast-chat runtime integration.
+- Evidence: full verify passes formatting/vet/race/integration/build/frontend and 250/262 changed executable lines (95.42%); root Go coverage 97.4%, demo 92.9%. All 39 shared command vectors pass; WebSocket tests cover invocation boundaries, result terminal status, interruption and demo alias mutation only after end. Command-stream benchmark evidence is committed.

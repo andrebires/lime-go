@@ -185,7 +185,7 @@ func (r *Registry) AliasCommand(e Envelope) Envelope {
 	case e.Method == "get":
 		resp.Type = "json"
 		resp.Resource, _ = json.Marshal(r.Aliases())
-	case e.Method == "set" && e.Type == "json" && e.Resource != nil:
+	case e.Method == "set" && (e.Type == "json" || e.Type == "application/json") && e.Resource != nil:
 		var batch map[string]string
 		if err = json.Unmarshal(e.Resource, &batch); err == nil {
 			if len(batch) == 0 {

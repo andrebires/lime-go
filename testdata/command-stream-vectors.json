@@ -1,0 +1,1163 @@
+[
+  {
+    "name": "text request and text response",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "Hello ",
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "world!",
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "expect": {
+          "uri": "/draft",
+          "type": "text/plain",
+          "resource": "Hello world!"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "Saved.",
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "stream": "end"
+        },
+        "expect": {
+          "type": "text/plain",
+          "resource": "Saved.",
+          "status": "success"
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "remote JSON request complete response",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": [
+            {
+              "op": "add",
+              "path": "/items",
+              "value": []
+            },
+            {
+              "op": "add",
+              "path": "/items/-",
+              "value": null
+            }
+          ],
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "expect": {
+          "uri": "/draft",
+          "type": "application/json",
+          "resource": {
+            "items": [
+              null
+            ]
+          }
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success"
+        },
+        "expect": {
+          "status": "success"
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "complete request JSON response",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": [
+            {
+              "op": "add",
+              "path": "",
+              "value": [
+                1,
+                null
+              ]
+            },
+            {
+              "op": "add",
+              "path": "/-",
+              "value": 2
+            }
+          ],
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "stream": "end"
+        },
+        "expect": {
+          "resource": [
+            1,
+            null,
+            2
+          ],
+          "status": "success"
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "early failure abandons unfinished input",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "failure",
+          "reason": {
+            "code": 100
+          }
+        },
+        "expect": {
+          "status": "failure",
+          "reason": {
+            "code": 100
+          }
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "failure end discards removed root",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": [
+            {
+              "op": "remove",
+              "path": ""
+            }
+          ],
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "failure",
+          "reason": {
+            "code": 100
+          },
+          "stream": "end"
+        },
+        "expect": {
+          "status": "failure",
+          "reason": {
+            "code": 100
+          },
+          "noResource": true
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "empty text request and JSON response",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "expect": {
+          "resource": ""
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "stream": "end"
+        },
+        "expect": {
+          "resource": {},
+          "status": "success"
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "request root replacement",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": [
+            {
+              "op": "add",
+              "path": "",
+              "value": null
+            }
+          ],
+          "stream": "data"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "expect": {
+          "resource": null
+        }
+      }
+    ],
+    "active": 1
+  },
+  {
+    "name": "complete both directions",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "json",
+          "resource": {
+            "x": 1
+          }
+        },
+        "expect": {
+          "resource": {
+            "x": 1
+          }
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "type": "json",
+          "resource": null
+        },
+        "expect": {
+          "resource": null,
+          "status": "success"
+        }
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "data after termination",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success"
+        },
+        "expect": {
+          "status": "success"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "late",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "response start without request",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "data without start",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "x",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "mismatched method",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "get",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "early response success forbidden",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "incoming request conflicts with outgoing id",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "duplicate request start",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "duplicate response start",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "request end status forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "stream": "end"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "response end status required",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "JSON failed test abandons invocation",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "json",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": [
+            {
+              "op": "add",
+              "path": "/x",
+              "value": 1
+            },
+            {
+              "op": "test",
+              "path": "/x",
+              "value": 2
+            }
+          ],
+          "stream": "data"
+        },
+        "error": true
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "text contribution requires string",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": null,
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "complete response cannot interrupt result stream",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "resource": "ready"
+        },
+        "expect": {
+          "resource": "ready"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "failure",
+          "reason": {
+            "code": 100
+          }
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "request data cannot follow request end",
+    "steps": [
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "stream": "end"
+        },
+        "expect": {
+          "resource": ""
+        }
+      },
+      {
+        "direction": "outgoing",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "late",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "invalid method",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "bogus",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "id required",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "start resource forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start",
+          "resource": "x"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "start status forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start",
+          "status": "success"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "type required",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "stream": "start"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "data URI forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "resource": "x",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "data type forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "type": "text",
+          "resource": "x",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "data status forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "x",
+          "status": "success",
+          "stream": "data"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "end resource forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": null,
+          "stream": "end"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "unknown phase",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "resource": "x",
+          "stream": "chunk"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "failure reason required",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "failure"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "reason success forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "status": "success",
+          "reason": {
+            "code": 1
+          }
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "command content forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start",
+          "content": "x"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "command revision forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start",
+          "rev": 1
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "command thread forbidden",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/draft",
+          "type": "text",
+          "stream": "start",
+          "thread": "t"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "URI status exclusive",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/x",
+          "status": "success"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  },
+  {
+    "name": "complete type resource together",
+    "steps": [
+      {
+        "direction": "incoming",
+        "envelope": {
+          "id": "c",
+          "method": "set",
+          "uri": "/x",
+          "type": "text"
+        },
+        "error": true
+      }
+    ],
+    "active": 0
+  }
+]

@@ -1,4 +1,4 @@
-<!-- Source: fast-chat working-tree draft updated 2026-10-08; SHA-256 4ed690d2c0192ae374355996291926aa8b9c553d74f82590f23057e45cbb3f6e. Relative links point to source repository main, not immutable snapshots of those documents. -->
+<!-- Source: fast-chat commit 32907b5200b0ebda7c049f86f35168d0fc268360; SHA-256 4334d02b342269dcdfb7f53463cc403eaf7a58f70b8ca98f0f758a3a2c2759f7. Relative links reference the source commit. -->
 
 # LIME 2.0 — Specification v0.1 review draft
 
@@ -6,11 +6,11 @@ Date: **2026-10-07**. Status: **Draft for review; wire contract not frozen**.
 Updated: **2026-10-08**, symmetric command streaming and RFC 6902 JSON Patch.
 
 This document consolidates the selected direction from the
-[exploration decision log](https://github.com/andrebires/fast-chat/blob/main/docs/specifications/lime-2-exploration.md). It is a proposal for an evolved
+[exploration decision log](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/specifications/lime-2-exploration.md). It is a proposal for an evolved
 LIME protocol, not an official LIME release, a deployed implementation, or a claim
 of compatibility with historical LIME clients.
 
-Active research task: **LIME2-SPEC-01** in the [backlog](https://github.com/andrebires/fast-chat/blob/main/BACKLOG.md).
+Active research task: **LIME2-SPEC-01** in the [backlog](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/BACKLOG.md).
 The historical M2-F02-T03 association remains absent; the log records it. Relevant
 implementation work remains M2-F02-T01/T02. This draft does not change backlog
 status, runtime code, or accepted ADRs. The review items at the end must be
@@ -219,6 +219,9 @@ RFC 7396 Merge Patch. Each data content is a complete operation array, not a
 fragment of serialized JSON. Support `add`, `remove`, `replace`, `move`, `copy`,
 and `test`, with RFC 6901 JSON Pointers. Arrays support insertion and `/-`
 append; literal null is a value, while `remove` explicitly deletes a member.
+Pointer tokens escape `~` as `~0` and `/` as `~1`; parent containers must already
+exist. An empty operation array is a valid no-op. A plain object or scalar is not
+a patch document; replace the entire value with an operation targeting `path: ""`.
 Operations and contributions apply in delivery order. Unknown operation members
 are ignored as specified by RFC 6902; unknown operations and invalid pointers fail.
 See [RFC 6902](https://www.rfc-editor.org/rfc/rfc6902.html).
@@ -484,9 +487,11 @@ starts. If a result stream has started, terminate it with a failure end.
 
 For both directions, text starts from an empty string and appends decoded string
 data. JSON starts from a fresh `{}` and applies complete RFC 6902 JSON Patch
-values. Start transmits no initial content. Arrays replace, null object members
-delete, and non-object values replace the target, exactly as for messages. The
-request and response have independent assembly state and may use different types.
+operation arrays, using the same rules as message content in section 4.2. Start
+transmits no initial content. Operations explicitly insert, append, replace, or
+remove array elements; null is an ordinary value, not a deletion signal. Root
+replacement uses an operation with `path: ""`. The request and response have
+independent assembly state and may use different types.
 
 **Provisional examples:** each line below is a separate envelope. Newlines group
 them for reading; this does not introduce a batch or JSON-lines transport.
@@ -722,21 +727,21 @@ must be discoverable by convention or extension, or fail predictably.
 
 ## 11. Repository authority and validation
 
-This draft does not supersede the [product foundation](https://github.com/andrebires/fast-chat/blob/main/docs/product-foundation.md)
-or [accepted ADRs](https://github.com/andrebires/fast-chat/blob/main/docs/adr/README.md). Before affected runtime work, reconcile:
+This draft does not supersede the [product foundation](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/product-foundation.md)
+or [accepted ADRs](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/README.md). Before affected runtime work, reconcile:
 
 | ADR | Reconciliation |
 | --- | --- |
-| [0003](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0003-conversation-event-stream.md) | Map public messages/revisions to authoritative durable events. |
-| [0004](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0004-lime-over-websocket.md) | Review new streaming, session defaults, receipts, aliases, and HTTP transfer exceptions. |
-| [0005](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0005-typed-rich-ui.md) | Supersede mandatory multipart while retaining validated, trusted UI. |
-| [0006](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0006-operational-data-backbone.md) | Preserve PostgreSQL authority, transactional outbox, and acknowledged durability. |
+| [0003](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0003-conversation-event-stream.md) | Map public messages/revisions to authoritative durable events. |
+| [0004](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0004-lime-over-websocket.md) | Review new streaming, session defaults, receipts, aliases, and HTTP transfer exceptions. |
+| [0005](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0005-typed-rich-ui.md) | Supersede mandatory multipart while retaining validated, trusted UI. |
+| [0006](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0006-operational-data-backbone.md) | Preserve PostgreSQL authority, transactional outbox, and acknowledged durability. |
 
 Authentication and attachment behavior must retain
-[ADR 0008](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0008-identity-and-resume.md) and
-[ADR 0016](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0016-security-privacy-and-abuse.md). Recorded-audio intent is not
+[ADR 0008](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0008-identity-and-resume.md) and
+[ADR 0016](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0016-security-privacy-and-abuse.md). Recorded-audio intent is not
 authorization to expand the current product milestone. Business actions retain
-the [policy/action boundary](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0009-orchestrator-action-boundary.md).
+the [policy/action boundary](https://github.com/andrebires/fast-chat/blob/32907b5200b0ebda7c049f86f35168d0fc268360/docs/adr/0009-orchestrator-action-boundary.md).
 
 Document validation covers example JSON, local links, whitespace, and repository
 verification. It is not protocol interoperability testing. Future contract tests

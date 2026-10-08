@@ -179,6 +179,8 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registry, _ := lime.NewRegistry(lime.Limits{})
+	commands, _ := lime.NewCommandAssembler(registry, lime.Limits{})
+	defer commands.Reset()
 	assembly, _ := lime.NewAssembler(registry, lime.Limits{})
 	tracker, _ := lime.NewTracker(info.Remote, lime.Limits{})
 	p := &peer{node: info.Remote, conn: c, registry: registry, assembler: assembly, tracker: tracker, routes: make(map[string]*streamRoute), deliveries: make(map[string]*delivery)}
@@ -213,10 +215,21 @@ func (h *hub) websocket(w http.ResponseWriter, r *http.Request) {
 			_ = c.Send(r.Context(), lime.Envelope{ID: info.ID, State: "finished"})
 			return
 		case lime.Command:
-			if e.Status != "" {
+			result, commandErr := commands.Apply(e, lime.IncomingCommand)
+			if commandErr != nil {
+				resp := lime.Envelope{ID: e.ID, To: p.node, Method: e.Method, Status: "failure", Reason: &lime.Reason{Code: lime.InvalidInput, Description: commandErr.Error()}}
+				if err = c.Send(r.Context(), resp); err != nil {
+					return
+				}
 				continue
 			}
-			resp := h.command(r.Context(), p, e)
+			if !result.Complete || result.Response {
+				continue
+			}
+			resp := h.command(r.Context(), p, result.Command)
+			if _, err = commands.Apply(resp, lime.OutgoingCommand); err != nil {
+				return
+			}
 			if err = c.Send(r.Context(), resp); err != nil {
 				return
 			}
@@ -430,7 +443,7 @@ func (h *hub) message(ctx context.Context, p *peer, e lime.Envelope) error {
 const deliveryURI = "/messages/delivery"
 
 func (h *hub) deliveryCommand(ctx context.Context, p *peer, e lime.Envelope) (json.RawMessage, error) {
-	if (e.Method != "get" && e.Method != "set") || e.Type != "json" || e.Resource == nil {
+	if (e.Method != "get" && e.Method != "set") || (e.Type != "json" && e.Type != "application/json") || e.Resource == nil {
 		return nil, errors.New("use get for status or set for retry with type json and resource {id,rev}")
 	}
 	var input struct {

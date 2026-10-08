@@ -81,7 +81,7 @@ func (e Envelope) NotificationScope() string {
 func (e Envelope) Kind() (Kind, error) {
 	k := Kind(0)
 	count := 0
-	if e.Content != nil || e.Stream != "" {
+	if e.Content != nil || (e.Stream != "" && e.Method == "" && e.Event == "" && e.State == "") {
 		k = Message
 		count++
 	}
@@ -190,30 +190,11 @@ func (e Envelope) Validate() error {
 			return errors.New("reason only permitted for failed notification")
 		}
 	case Command:
-		allowed |= fType | fMethod | fURI | fStatus | fResource | fReason
-		switch e.Method {
-		case "get", "set", "delete", "subscribe", "unsubscribe", "observe", "merge":
-		default:
-			return errors.New("invalid command method")
+		allowed |= fType | fMethod | fURI | fStatus | fResource | fReason | fStream
+		if err := validateCommand(e); err != nil {
+			return err
 		}
-		if e.ID == "" && e.Method != "observe" {
-			return errors.New("command id required")
-		}
-		if (e.URI == "") == (e.Status == "") {
-			return errors.New("command requires uri or status exclusively")
-		}
-		if e.Status != "" && e.Status != "success" && e.Status != "failure" {
-			return errors.New("invalid command status")
-		}
-		if e.Status == "failure" && e.Reason == nil {
-			return errors.New("command failure requires reason")
-		}
-		if e.Status != "failure" && e.Reason != nil {
-			return errors.New("reason only permitted for failure response")
-		}
-		if (e.Resource == nil) != (e.Type == "") {
-			return errors.New("resource and type required together")
-		}
+
 	case Session:
 		allowed |= fState | fVersion | fScheme | fSchemeOptions | fAuthentication | fReason
 		switch e.State {
@@ -241,6 +222,50 @@ func (e Envelope) Validate() error {
 	}
 	if mask & ^allowed != 0 {
 		return errors.New("field not permitted for envelope family")
+	}
+	return nil
+}
+
+func validateCommand(e Envelope) error {
+	switch e.Method {
+	case "get", "set", "delete", "subscribe", "unsubscribe", "observe", "merge":
+	default:
+		return errors.New("invalid command method")
+	}
+	if e.ID == "" && (e.Method != "observe" || e.Stream != "") {
+		return errors.New("command id required")
+	}
+	if e.Status != "" && e.Status != "success" && e.Status != "failure" {
+		return errors.New("invalid command status")
+	}
+	if e.Status == "failure" && e.Reason == nil {
+		return errors.New("command failure requires reason")
+	}
+	if e.Status != "failure" && e.Reason != nil {
+		return errors.New("reason only permitted for failure response")
+	}
+	switch e.Stream {
+	case "":
+		if (e.URI == "") == (e.Status == "") {
+			return errors.New("command requires uri or status exclusively")
+		}
+		if (e.Resource == nil) != (e.Type == "") {
+			return errors.New("resource and type required together")
+		}
+	case "start":
+		if e.Type == "" || e.Resource != nil || e.Status != "" {
+			return errors.New("command start requires type and forbids resource/status")
+		}
+	case "data":
+		if e.Resource == nil || e.Type != "" || e.URI != "" || e.Status != "" {
+			return errors.New("command data requires resource and forbids type/uri/status")
+		}
+	case "end":
+		if e.Resource != nil || e.Type != "" || e.URI != "" {
+			return errors.New("command end forbids resource/type/uri")
+		}
+	default:
+		return errors.New("invalid command stream signal")
 	}
 	return nil
 }
