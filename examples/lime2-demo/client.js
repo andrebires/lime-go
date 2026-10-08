@@ -313,7 +313,6 @@ function handle(e) {
     const item = {
       message: e,
       patchDocument: new LimeJsonPatch.default(LimeJsonPatch.copyJsonValue, 64, 1048576),
-      patchBytes: 0,
       value:
         e.type === "text" || e.type === "text/plain" || e.type === "note"
           ? ""
@@ -333,8 +332,8 @@ function handle(e) {
       if (item.message.type === "text" || item.message.type === "text/plain" || item.message.type === "note") item.value += e.content;
       else {
         const bytes = LimeJsonPatch.jsonBytes(e.content);
-        if (item.patchBytes + bytes > 1048576) throw new Error("JSON stream work limit exceeded");
-        item.patchBytes += bytes + item.patchDocument.apply(LimeJsonPatch.copyJsonValue(e.content, 66), 256, 1048576 - item.patchBytes - bytes);
+        if (bytes > 1048576) throw new Error("JSON contribution limit exceeded");
+        item.patchDocument.apply(LimeJsonPatch.copyJsonValue(e.content, 66), 256, 1048576);
         item.value = item.patchDocument.value;
       }
     } catch (error) {

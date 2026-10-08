@@ -6,7 +6,7 @@ licensed source is `andrebires/lime-js/src/Lime/Protocol/JsonPatch.ts` and its
 `has` import from `Validation.ts`. The source is verified in lime-js; browser contracts and shared vectors
 exercise the generated code under this repository's changed-line coverage gate.
 
-Source SHA-256: `cad1cb12783574495adea576d88e7ca0d80b263a243e2bcff1bb6e3cba950ee0`.
+Source SHA-256: `aa1a25be5c59ee164c8fd6538f3ca15825b008190c478e609e4f81725759448d`.
 
 Regenerate from a matching lime-js checkout after `npm ci`:
 

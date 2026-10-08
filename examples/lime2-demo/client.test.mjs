@@ -779,6 +779,7 @@ test("confirmed delivery completion remains terminal across reordered status rep
 test("browser patch engine matches shared vectors and rejects incomplete batches", async () => {
   const vectors=JSON.parse(fs.readFileSync(new URL("../../testdata/json-patch-vectors.json",import.meta.url),"utf8"));
   const l=lab();
+  assert.throws(()=>vm.runInContext("LimeJsonPatch.copyJsonValue(Array(1),64)",l.context),/JSON value/);
   for(const v of vectors){
     const run=()=>vm.runInContext(`(()=>{
       const d=new LimeJsonPatch.default(LimeJsonPatch.copyJsonValue,64,1048576);
@@ -798,4 +799,26 @@ test("browser patch engine matches shared vectors and rejects incomplete batches
   s.deliver({id:"large",from:"bob",stream:"data",content:[{op:"add",path:"/x",value:"x".repeat(1048576)}]});
   assert.match(l.get("state").textContent,/Rejected JSON patch/);
   s.close();
+});
+
+test("browser JSON work budgets reset per contribution and bound copy work independently", async () => {
+  const l=lab();const s=await l.connect();
+  const start=id=>s.deliver({id,from:"bob",type:"json",stream:"start"});
+  const data=(id,content)=>s.deliver({id,from:"bob",stream:"data",content});
+  const end=id=>s.deliver({id,from:"bob",stream:"end"});
+  start("replace");
+  data("replace",[{op:"add",path:"/x",value:"x".repeat(600000)}]);
+  for(let i=0;i<3;i++)data("replace",[{op:"replace",path:"/x",value:"y".repeat(600000)}]);
+  end("replace");
+  assert.ok(s.sent.some(e=>e.event==="received"&&e.id==="replace"));
+  start("independent");
+  data("independent",[{op:"add",path:"/x",value:"x".repeat(300000)},
+    ...Array.from({length:3},()=>[{op:"copy",from:"/x",path:"/y"},{op:"remove",path:"/y"}]).flat()]);
+  end("independent");
+  assert.ok(s.sent.some(e=>e.event==="received"&&e.id==="independent"));
+  start("copy-work");data("copy-work",[{op:"add",path:"/x",value:"x".repeat(600000)}]);
+  data("copy-work",Array.from({length:2},()=>[{op:"copy",from:"/x",path:"/x"}]).flat());
+  assert.match(l.get("state").textContent,/copy work limit/);
+  end("copy-work");
+  assert.ok(!s.sent.some(e=>e.event==="received"&&e.id==="copy-work"));s.close();
 });

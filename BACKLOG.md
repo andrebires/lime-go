@@ -13,7 +13,7 @@
 
 # Implementation backlog
 
-- Evidence: full verification passes with 577/608 changed executable lines (94.90%); Go package coverage 97.1%, demo 93.2%; browser 99.60% lines / 100% functions / 93.78% branches. All 74 shared vectors pass; fuzzing completed 299,106 cases. Two live browser clients verified append, removal, end and final receipt with no console errors; [evidence](docs/demo-json-patch.png). Array benchmarks are recorded in docs/performance.md.
+- Evidence: full verification passes with 576/607 changed executable lines (94.89%); Go package coverage 97.2%, demo 93.2%; browser 99.59% lines / 100% functions / 94.27% branches. All 74 shared vectors pass; fuzzing completed 299,106 cases. Two live browser clients verified append, removal, end and final receipt with no console errors; [evidence](docs/demo-json-patch.png). Array benchmarks are recorded in docs/performance.md.
 
 ## LIME2-T03 — Address PR review and merge verified implementation
 

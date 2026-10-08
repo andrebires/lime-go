@@ -38,7 +38,7 @@ var LimeJsonPatch = (() => {
     if (depth < 0) throw new Error("JSON nesting limit exceeded");
     if (value === null || typeof value === "string" || typeof value === "boolean") return value;
     if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (Array.isArray(value)) return value.map((item) => copyJsonValue(item, depth - 1));
+    if (Array.isArray(value)) return Array.from(value, (item) => copyJsonValue(item, depth - 1));
     if (!object(value) || Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) throw new Error("Content must be a JSON value");
     const result = {};
     for (const key of Object.keys(value)) set(result, key, copyJsonValue(value[key], depth - 1));
