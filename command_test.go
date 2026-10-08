@@ -435,3 +435,19 @@ func BenchmarkCommandTextStream(b *testing.B) {
 		}
 	}
 }
+
+func TestCompleteAndStreamedCommandsResolveCustomAliasesEqually(t *testing.T) {
+	r, _ := NewRegistry(Limits{})
+	if err := r.Register(map[string]string{"object": "application/json"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := NewCommandAssembler(r, Limits{})
+	complete := applyCommand(t, a, Envelope{ID: "complete", Method: "set", URI: "/x", Type: "object", Resource: []byte(`{"x":null}`)}, IncomingCommand)
+	applyCommand(t, a, Envelope{ID: "stream", Method: "set", URI: "/x", Type: "object", Stream: "start"}, IncomingCommand)
+	applyCommand(t, a, Envelope{ID: "stream", Method: "set", Stream: "data", Resource: []byte(`[{"op":"add","path":"/x","value":null}]`)}, IncomingCommand)
+	streamed := applyCommand(t, a, Envelope{ID: "stream", Method: "set", Stream: "end"}, IncomingCommand)
+	if complete.Command.Type != "application/json" || streamed.Command.Type != complete.Command.Type || string(streamed.Command.Resource) != string(complete.Command.Resource) {
+		t.Fatal(complete, streamed)
+	}
+	a.Reset()
+}

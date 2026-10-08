@@ -781,3 +781,27 @@ func TestStreamedAliasCommandDoesNotExecuteBeforeEnd(t *testing.T) {
 		t.Fatal("failed input invoked", r)
 	}
 }
+
+func TestCompleteAndStreamedAliasResourcesHaveEquivalentTypes(t *testing.T) {
+	_, s := demo(t)
+	a := client(t, s)
+	send(t, a, lime.Envelope{ID: "object", Method: "set", URI: lime.AliasURI, Type: "json", Resource: []byte(`{"object":"application/json"}`)})
+	if r := receive(t, a); r.Status != "success" {
+		t.Fatal(r)
+	}
+	send(t, a, lime.Envelope{ID: "complete", Method: "set", URI: lime.AliasURI, Type: "object", Resource: []byte(`{"complete-plain":"text/plain"}`)})
+	if r := receive(t, a); r.Status != "success" {
+		t.Fatal("complete alias type", r)
+	}
+	send(t, a, lime.Envelope{ID: "stream", Method: "set", URI: lime.AliasURI, Type: "object", Stream: "start"})
+	send(t, a, lime.Envelope{ID: "stream", Method: "set", Stream: "data", Resource: []byte(`[{"op":"add","path":"/stream-plain","value":"text/plain"}]`)})
+	send(t, a, lime.Envelope{ID: "stream", Method: "set", Stream: "end"})
+	if r := receive(t, a); r.Status != "success" {
+		t.Fatal("stream alias type", r)
+	}
+	send(t, a, lime.Envelope{ID: "read", Method: "get", URI: lime.AliasURI})
+	r := receive(t, a)
+	if !strings.Contains(string(r.Resource), "complete-plain") || !strings.Contains(string(r.Resource), "stream-plain") {
+		t.Fatal(r)
+	}
+}

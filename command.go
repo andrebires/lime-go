@@ -220,9 +220,14 @@ func (a *CommandAssembler) complete(e Envelope, response bool) (CommandResult, e
 		return CommandResult{}, errors.New("command resource limit exceeded")
 	}
 	if e.Resource != nil {
-		if err := a.registry.Validate(e.Type, e.Resource); err != nil {
+		resolved, err := a.registry.Resolve(e.Type)
+		if err != nil {
 			return CommandResult{}, err
 		}
+		if err := a.registry.Validate(resolved, e.Resource); err != nil {
+			return CommandResult{}, err
+		}
+		e.Type = resolved
 	}
 	return CommandResult{Command: clone(e), Complete: true, Response: response}, nil
 }

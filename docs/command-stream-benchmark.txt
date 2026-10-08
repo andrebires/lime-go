@@ -2,8 +2,8 @@ goos: darwin
 goarch: arm64
 pkg: github.com/andrebires/lime-go/v2
 cpu: Apple M5 Pro
-BenchmarkCommandTextStream-18    	   68425	     17438 ns/op	    3523 B/op	      18 allocs/op
-BenchmarkCommandTextStream-18    	   66649	     17899 ns/op	    3522 B/op	      18 allocs/op
-BenchmarkCommandTextStream-18    	   68380	     17383 ns/op	    3522 B/op	      18 allocs/op
+BenchmarkCommandTextStream-18    	   65449	     17326 ns/op	    3523 B/op	      18 allocs/op
+BenchmarkCommandTextStream-18    	   70326	     17299 ns/op	    3522 B/op	      18 allocs/op
+BenchmarkCommandTextStream-18    	   70718	     17136 ns/op	    3522 B/op	      18 allocs/op
 PASS
-ok  	github.com/andrebires/lime-go/v2	3.906s
+ok  	github.com/andrebires/lime-go/v2	4.057s
