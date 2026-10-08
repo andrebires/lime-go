@@ -86,3 +86,9 @@ It includes no WebSocket I/O, application authorization or execution. Contributi
 borrow decoded input bytes for progress; text is accumulated once and quoted at
 end, so this fixture's allocation count is per document, not per chunk.
 Reproduce with go test -run '^$' -bench '^BenchmarkCommandTextStream$' -benchmem -count=3 .
+
+A separate live Node 24 lime-js / Go Conn / CommandAssembler smoke check over a
+loopback WebSocket fixture with transport-established identity passed JSON Patch
+array/null input, text input, independently streamed JSON responses, a probe
+confirming zero handler invocations before request end, and terminal exchange
+cleanup. This was a correctness check; its network latency was not benchmarked.
