@@ -1,8 +1,8 @@
 # LIME 2.0 for Go
 
 An experimental, non-binary LIME 2.0 stack based on the
-[2026-10-07 v0.1 draft](docs/lime-2-v0.1-draft.md) and the
-[approved implementation profile](docs/adr/0001-lime2-profile.md).
+[2026-10-08 v0.1 draft](docs/lime-2-v0.1-draft.md) and the
+[approved JSON Patch profile](docs/adr/0002-json-patch-streaming.md).
 The wire remains readable JSON over WebSocket text messages (`lime` subprotocol).
 
 This is a **breaking rewrite**. Import `github.com/andrebires/lime-go/v2`.
@@ -24,8 +24,7 @@ peers, choose a recipient or broadcast, and type. Characters arrive before you
 press **Finish / send**. Live text is append-only during a stream; finish before
 editing previous text. The wire viewer shows start/data/end and correlated receipts.
 
-The JSON button shows RFC 7396 recursive merging, array replacement, and null
-member deletion with a deliberate 750 ms interval. You can register the session
+The JSON button shows RFC 6902 array append and explicit member removal with a deliberate 750 ms interval. You can register the session
 alias `note`, mark completed messages read, retry whole unreceived messages,
 disconnect and establish a new session. The tests additionally cover default and
 non-default revisions, cumulative receipt/read gaps, failed entries, unsupported
@@ -101,7 +100,15 @@ for {
 is revision 1. Start declares type; data carries a contribution; end carries
 neither. `Result.Message` on data is the contribution with resolved type/routing;
 complete assembled content is returned only at end. JSON numbers retain their
-literal precision. Serialized JSON inside a text string stays text.
+literal precision. Structured data contributions are RFC 6902 operation arrays;
+all six operations and RFC 6901 pointers are supported. Each revision starts at
+{}; root removal requires replacement before end. Invalid batches discard the
+provisional stream. Whole-message retries never replay array-append patches.
+The exported `JSONPatch` replaces the former `MergePatch` helper. This changes
+the draft wire format: upgrade structured-stream peers together. Literal null
+is a value; deletion uses `remove`. Operation count is bounded by `Limits.Entries`
+per batch; document/contribution size and copy work by `ContentBytes`.
+Serialized JSON inside a text string stays text.
 
 `Decode` owns returned bytes and rejects ambiguous families, duplicate keys,
 unknown fields, invalid UTF-8, wrong lifecycle fields and illegal event/scope pairs.

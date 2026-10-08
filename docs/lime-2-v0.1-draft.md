@@ -1,16 +1,17 @@
-<!-- Source snapshot: andrebires/fast-chat commit 99c10c5, docs/specifications/lime-2-v0.1-draft.md. Relative source links converted to provenance URLs. -->
+<!-- Source: fast-chat working-tree draft updated 2026-10-08; SHA-256 4ed690d2c0192ae374355996291926aa8b9c553d74f82590f23057e45cbb3f6e. Relative links point to source repository main, not immutable snapshots of those documents. -->
 
 # LIME 2.0 — Specification v0.1 review draft
 
 Date: **2026-10-07**. Status: **Draft for review; wire contract not frozen**.
+Updated: **2026-10-08**, symmetric command streaming and RFC 6902 JSON Patch.
 
 This document consolidates the selected direction from the
-[exploration decision log](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/specifications/lime-2-exploration.md). It is a proposal for an evolved
+[exploration decision log](https://github.com/andrebires/fast-chat/blob/main/docs/specifications/lime-2-exploration.md). It is a proposal for an evolved
 LIME protocol, not an official LIME release, a deployed implementation, or a claim
 of compatibility with historical LIME clients.
 
-Requested research association: **M2-F02-T03**. That task is currently absent
-from the [backlog](https://github.com/andrebires/fast-chat/blob/99c10c5/BACKLOG.md); the log records the discrepancy. Relevant
+Active research task: **LIME2-SPEC-01** in the [backlog](https://github.com/andrebires/fast-chat/blob/main/BACKLOG.md).
+The historical M2-F02-T03 association remains absent; the log records it. Relevant
 implementation work remains M2-F02-T01/T02. This draft does not change backlog
 status, runtime code, or accepted ADRs. The review items at the end must be
 resolved before claiming independent implementations will interoperate.
@@ -213,37 +214,54 @@ the full response can delay publication. No buffering interval is standardized.
 
 ### 4.2 JSON
 
-Streamed JSON content uses **JSON Merge Patch, RFC 7396**. Each data content is a
-complete JSON patch value, not a fragment of serialized JSON. Object members
-merge recursively, arrays replace wholesale, and null-valued object members
-delete those members. A non-object patch replaces the target. Literal null-valued
-object properties cannot be directly assigned using an object merge patch.
+**Selected 2026-10-08:** streamed JSON uses **RFC 6902 JSON Patch**, replacing
+RFC 7396 Merge Patch. Each data content is a complete operation array, not a
+fragment of serialized JSON. Support `add`, `remove`, `replace`, `move`, `copy`,
+and `test`, with RFC 6901 JSON Pointers. Arrays support insertion and `/-`
+append; literal null is a value, while `remove` explicitly deletes a member.
+Operations and contributions apply in delivery order. Unknown operation members
+are ignored as specified by RFC 6902; unknown operations and invalid pointers fail.
+See [RFC 6902](https://www.rfc-editor.org/rfc/rfc6902.html).
 
 The final content type remains the component/document type, such as `select`;
 it is not replaced with a patch MIME type. Aliases do not change assembly rules.
-See [RFC 7396](https://www.rfc-editor.org/rfc/rfc7396.html).
 
-**Selected 2026-10-07:** on a start whose resolved type is JSON, initialize that
-message revision's assembly to a fresh empty object `{}`. Start still carries no
-content; no initial `{}` data contribution is required. Apply subsequent data
-values using RFC 7396, never implicitly patching a previously completed revision.
-The initial object does not restrict later values to objects: arrays/scalars
-still replace the target under Merge Patch. The content schema governs the final
-value, including whether an empty object is valid if no data arrives before end.
-Partial-validation rules remain open; numeric limits belong to the profile.
+On a JSON start, initialize that revision's assembly to fresh `{}`. Start has no
+content. Patches affect only the provisional content, never a previous completed
+revision or envelope. `path: ""` addresses the root and permits array/scalar/null
+replacement. Removing the root requires a later root `add` before successful end.
+Empty streams produce `{}`, subject to the final content schema.
 
-Example data contributions for a Select object:
+Apply each operation batch atomically from the consumer's perspective. An invalid
+operation, missing target/parent, failed test, forbidden descendant move, or limit
+violation discards the affected provisional stream; it must not produce successful
+progress/completion/receipt. Profiles bound operations, accumulated work, result
+size and depth, including `copy` expansion. Preserve prior completed revisions.
+Patches are not generally idempotent: do not replay or retry individual data
+contributions. Recovery sends complete content or restarts a fresh assembly.
+
+Example data contributions after a start declaring `type: "select"`:
 
 ```json
-{"id":"m2","stream":"data","content":{"text":"Choose a topic"}}
+{"id":"m2","stream":"data","content":[{"op":"add","path":"/text","value":"Choose a topic"},{"op":"add","path":"/options","value":[]}]}
 ```
 
 ```json
-{"id":"m2","stream":"data","content":{"options":[{"text":"Delivery"},{"text":"Returns"}]}}
+{"id":"m2","stream":"data","content":[{"op":"add","path":"/options/-","value":{"text":"Delivery"}}]}
 ```
 
-These examples assume a preceding start declaring `type: "select"` and a later
-end. Repeated `options` contributions replace the array rather than append to it.
+```json
+{"id":"m2","stream":"data","content":[{"op":"add","path":"/options/-","value":{"text":"Returns"}},{"op":"add","path":"/selection","value":null}]}
+```
+
+The array grows without retransmitting earlier options. A later end confirms the
+assembled complete document. JSON Patch does not append substrings to string
+values; use text streaming for token-like string contributions.
+
+**Draft migration:** this changes structured-stream wire semantics. Update peers
+together or select an explicit matching profile; do not infer/downgrade formats
+from payload shape. Existing complete JSON and text messages retain their meaning.
+This does not by itself provide AG-UI envelope or state-baseline compatibility.
 
 JSON streaming implementation may be deferred. A receiver without support must
 not treat partial updates as successful complete content. The recommended failure
@@ -425,6 +443,13 @@ content when applicable. Responses use `status` and failure `reason`. This is th
 recommended retained shape, not adoption of every historical method or resource.
 See the [LIME command specification](https://limeprotocol.org/#command).
 
+**Selected 2026-10-08:** the protocol supports streaming in both command requests
+and command responses, for text strings and JSON values. An implementation may
+support either direction, both, or neither according to its profile/capabilities.
+The earlier recommendation to specify response streaming first is superseded.
+The lifecycle and examples below define the proposed wire details for this
+selected scope; they do not authorize runtime work.
+
 The three-event notification vocabulary does not replace command response
 statuses. There is no mandatory presence service or receipt-configuration
 resource. Alias registration and other protocol-resource commands are extensions
@@ -434,6 +459,108 @@ Thread creation, history, subscription, cancellation, and alias-resource URIs an
 schemas require a separate resource/profile definition. Avoid duplicating every
 operation over both HTTP and LIME. A command being received does not establish
 that a consequential business action succeeded.
+
+### 7.0 Command streaming contract and examples
+
+Reuse `stream: "start" | "data" | "end"`. Commands carry payload in `resource`,
+never `content`. Keep `id` and `method` on every command contribution so it remains
+identifiable without an envelope-kind field or a cross-family ID lookup. `type`
+appears on start, `resource` only on data. Start/end carry no resource. Complete
+commands without `stream` remain supported; either side may use the complete
+form independently of whether the other side streams.
+
+| Phase | Request | Response |
+| --- | --- | --- |
+| Start | `id`, `method`, `uri`, `type`, `stream: "start"` | `id`, `method`, `type`, `stream: "start"` |
+| Data | `id`, `method`, `resource`, `stream: "data"` | `id`, `method`, `resource`, `stream: "data"` |
+| End | `id`, `method`, `stream: "end"` | `id`, `method`, `stream: "end"`, `status`; `reason` required for failure |
+
+Request end means that the input is complete, not that the operation succeeded.
+Response end declares `status: "success"` or `"failure"`. Start/data response
+envelopes omit status; this is an explicit streaming exception to LIME's ordinary
+response requirement, not an implicit success or a new intermediate status.
+An ordinary complete failure response may reject a request before a result stream
+starts. If a result stream has started, terminate it with a failure end.
+
+For both directions, text starts from an empty string and appends decoded string
+data. JSON starts from a fresh `{}` and applies complete RFC 6902 JSON Patch
+values. Start transmits no initial content. Arrays replace, null object members
+delete, and non-object values replace the target, exactly as for messages. The
+request and response have independent assembly state and may use different types.
+
+**Provisional examples:** each line below is a separate envelope. Newlines group
+them for reading; this does not introduce a batch or JSON-lines transport.
+Resource URIs and schemas are illustrative application resources.
+
+Text `set` request, from requester to responder:
+
+```jsonl
+{"id":"c1","method":"set","uri":"/drafts/d1","type":"text","stream":"start"}
+{"id":"c1","method":"set","stream":"data","resource":"Hello "}
+{"id":"c1","method":"set","stream":"data","resource":"world!"}
+{"id":"c1","method":"set","stream":"end"}
+```
+
+The responder assembles `Hello world!`, validates and processes the request, then
+returns a text response, from responder to requester:
+
+```jsonl
+{"id":"c1","method":"set","type":"text","stream":"start"}
+{"id":"c1","method":"set","stream":"data","resource":"Saved "}
+{"id":"c1","method":"set","stream":"data","resource":"draft d1."}
+{"id":"c1","method":"set","stream":"end","status":"success"}
+```
+
+JSON `set` request, from requester to responder:
+
+```jsonl
+{"id":"c2","method":"set","uri":"/preferences","type":"json","stream":"start"}
+{"id":"c2","method":"set","stream":"data","resource":[{"op":"add","path":"/locale","value":"en"}]}
+{"id":"c2","method":"set","stream":"data","resource":[{"op":"add","path":"/notifications","value":{"email":true}}]}
+{"id":"c2","method":"set","stream":"end"}
+```
+
+The assembled request resource is
+`{"locale":"en","notifications":{"email":true}}`. After processing, a JSON
+response streams independently:
+
+```jsonl
+{"id":"c2","method":"set","type":"json","stream":"start"}
+{"id":"c2","method":"set","stream":"data","resource":[{"op":"add","path":"/saved","value":true}]}
+{"id":"c2","method":"set","stream":"data","resource":[{"op":"add","path":"/preferences","value":{"locale":"en","notifications":{"email":true}}}]}
+{"id":"c2","method":"set","stream":"end","status":"success"}
+```
+
+An intermediate `saved` field is provisional response data; it does not replace
+terminal status or the product's requirement for durable action evidence.
+
+**Correlation rules proposed for this grammar:**
+
+- All streamed commands require an ID. A request start includes `uri`; a response
+  start omits it and must match an outstanding local request by peer/routing
+  context, ID, and method. Start/end without resource are still commands.
+- Data/end inherit request-versus-response role from active assembly in that
+  direction; `uri` is not repeated. Reject an unknown stream, duplicate start,
+  mismatched method, conflicting reuse of an active ID, or data after termination.
+  Active command IDs must be unambiguous across both directions in that routing
+  context. Do not infer a role merely from absence of `status`.
+- Finish request assembly before executing the operation or producing a successful
+  result. Final schema validation, authorization, policy, and required approvals
+  still apply. A `set` fragment never mutates the addressed resource by itself.
+  Stream assembly is also distinct from the operation semantics of `method: "merge"`.
+- On early rejection, prevent execution and discard further input for that rejected
+  request under bounded cleanup rules. Disconnect before request end does not
+  produce a complete invocation. Disconnect after submission but before response
+  end leaves the caller's outcome unconfirmed; it does not prove non-execution.
+- Request end is not a receipt, and commands do not join message watermarks.
+  No message `rev` or public chunk sequence is added. Retry idempotency, requester
+  cancellation/abort signaling, cleanup limits, and exact errors remain review items.
+
+**Provider boundary:** JSON Patch can assign literal null-valued members and
+update arrays incrementally. Provider argument text fragments are not operation
+arrays: the adapter must assemble/validate and translate them, or send a complete
+command. No automatic conversion of arbitrary provider fragments is claimed.
+These constraints apply symmetrically to requests and responses.
 
 ### 7.1 Feature support and implementation limits
 
@@ -455,6 +582,11 @@ profile must document the supported set; text streaming and optional JSON
 streaming are separate capabilities. This review does not newly mandate JSON
 streaming implementation, which may still be deferred.
 
+**2026-10-08:** capability/profile support must distinguish receiving streamed
+command requests from receiving streamed command responses, and text from JSON.
+Message-streaming support alone does not imply either command direction. Exact
+capability names remain open; no new mandatory project handshake is introduced.
+
 Capability support does not install renderers, replace type/schema validation,
 or authorize content/actions. Exact unsupported-stream rejection timing remains
 under review. Capability extension names/values must also fit the strict grammar
@@ -475,18 +607,25 @@ not introduce a separate envelope-kind field. The inspected
 uses `method` with `uri` for requests, `method` with `status` for responses,
 `event` for notifications, `content` for messages, and `state` for sessions.
 
-Streaming requires one extension to that rule. Proposed 2.0 discrimination:
+**Updated 2026-10-08:** `stream` is shared by messages and commands. Classify by
+the envelope's top-level fields before interpreting its payload. Proposed 2.0
+discrimination, incorporating the selected command-streaming direction:
 
 | Envelope family | Identifying fields |
 | --- | --- |
 | Session | `state` |
 | Notification | `event` |
-| Command | `method`; `uri` identifies a request and `status` a response |
-| Message | `content` or `stream` |
+| Command | `method`, with or without `stream`; section 7.0 determines request/response role |
+| Message | `content` or `stream`, with no `method`, `event`, or `state` |
 
-Start/end lack `content`, so `stream` must identify them as message envelopes.
-Data may contain both `stream` and `content`; these identify the same family.
-Field presence, not truthiness, matters: empty text and JSON null contributions
+`method` plus `stream` identifies a streamed command, never a message. Validate
+that command even if its method value is invalid; never fall back to message
+parsing. A message may contain both `stream` and `content`. Start/end need no
+payload to be recognized. A command with `content`, a message with `resource`,
+or any combination of competing `method`/`event`/`state` families is invalid.
+Payload properties named `method`, `stream`, or `state` do not discriminate the
+outer envelope. JSON versus text affects assembly, not envelope classification.
+Field presence, not truthiness, matters: empty text and JSON null payloads
 must not become unidentifiable. Then validate the selected envelope's fields,
 values, and lifecycle. `type` remains shared content metadata, not a discriminator.
 
@@ -557,7 +696,7 @@ authorization, provenance, and action execution evidence.
 
 Items 1–5 have been discussed on **2026-10-07**. Implementation details should not
 block a core protocol release. Selected choices and remaining grammar questions
-are distinguished below:
+are distinguished below; item 6 records the **2026-10-08** command-streaming review:
 
 | Original item | Disposition |
 | --- | --- |
@@ -566,6 +705,7 @@ are distinguished below:
 | 3. Session profile | HTTP authentication is outside LIME. Retain fallback authentication. Add `version: 2` to `new`; omitted/unsupported versions produce session failure and close. Reconnect always creates a new session ID; no session resume. |
 | 4. Extensions and limits | Initial alias table selected from LIME's content-types page plus `json`. Registration remains a separate session command; its URI/payload/authority are open. General protocol capability exchange may use optional `negotiating`; the project skips it through conventions. Capability field/values/direction/defaults remain open. Numeric bounds and backpressure mechanisms belong to implementation/profile design. |
 | 5. Grammar | No `stream` means complete message; `id` is optional in that form. Positive integer revisions within the stated range and fresh `{}` JSON assembly at start are selected. Retain field-based detection with the necessary `stream` addition; detailed strict-validation/error rules remain recommendations. |
+| 6. Command streaming (2026-10-08) | Requests and responses both support text and JSON streaming at protocol level; runtime may implement either direction independently. Reuse `stream` with `resource`, and retain `method` for discrimination. Section 7.0 proposes correlation/lifecycle details; requester abort/cancellation, retry, and capability grammar remain open. |
 
 Two delivery details remain recommendations rather than selected rules: keeping
 the same `(id, rev)` on retry, and how cumulative progress treats an earlier failed
@@ -582,25 +722,29 @@ must be discoverable by convention or extension, or fail predictably.
 
 ## 11. Repository authority and validation
 
-This draft does not supersede the [product foundation](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/product-foundation.md)
-or [accepted ADRs](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/README.md). Before affected runtime work, reconcile:
+This draft does not supersede the [product foundation](https://github.com/andrebires/fast-chat/blob/main/docs/product-foundation.md)
+or [accepted ADRs](https://github.com/andrebires/fast-chat/blob/main/docs/adr/README.md). Before affected runtime work, reconcile:
 
 | ADR | Reconciliation |
 | --- | --- |
-| [0003](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0003-conversation-event-stream.md) | Map public messages/revisions to authoritative durable events. |
-| [0004](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0004-lime-over-websocket.md) | Review new streaming, session defaults, receipts, aliases, and HTTP transfer exceptions. |
-| [0005](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0005-typed-rich-ui.md) | Supersede mandatory multipart while retaining validated, trusted UI. |
-| [0006](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0006-operational-data-backbone.md) | Preserve PostgreSQL authority, transactional outbox, and acknowledged durability. |
+| [0003](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0003-conversation-event-stream.md) | Map public messages/revisions to authoritative durable events. |
+| [0004](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0004-lime-over-websocket.md) | Review new streaming, session defaults, receipts, aliases, and HTTP transfer exceptions. |
+| [0005](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0005-typed-rich-ui.md) | Supersede mandatory multipart while retaining validated, trusted UI. |
+| [0006](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0006-operational-data-backbone.md) | Preserve PostgreSQL authority, transactional outbox, and acknowledged durability. |
 
 Authentication and attachment behavior must retain
-[ADR 0008](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0008-identity-and-resume.md) and
-[ADR 0016](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0016-security-privacy-and-abuse.md). Recorded-audio intent is not
+[ADR 0008](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0008-identity-and-resume.md) and
+[ADR 0016](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0016-security-privacy-and-abuse.md). Recorded-audio intent is not
 authorization to expand the current product milestone. Business actions retain
-the [policy/action boundary](https://github.com/andrebires/fast-chat/blob/99c10c5/docs/adr/0009-orchestrator-action-boundary.md).
+the [policy/action boundary](https://github.com/andrebires/fast-chat/blob/main/docs/adr/0009-orchestrator-action-boundary.md).
 
 Document validation covers example JSON, local links, whitespace, and repository
 verification. It is not protocol interoperability testing. Future contract tests
-must cover duplicates, default revisions, interrupted streams, merge semantics,
+must cover duplicates, default revisions, interrupted streams, RFC 6902 operations,
 unsupported features, cumulative gaps, replacement replay, and tenant boundaries.
+Command-streaming contracts must additionally cover both request/response
+directions with text/JSON, top-level discrimination, concurrent streams and ID
+collisions, rejection before execution, failure after partial results, null-member
+semantics, and disconnects before/after submission.
 Performance validation must include session round trips, time to first permitted
 content, message completion, payload/CPU cost, and recovery under realistic load.

@@ -109,17 +109,17 @@ func TestMultiClientStreamingAndReceipts(t *testing.T) {
 			t.Fatal(not)
 		}
 	}
-	// JSON patches replace arrays and delete null members on the receiving assembler.
+	// JSON Patch appends array items and removes explicit members on the receiving assembler.
 	r, _ := lime.NewRegistry(lime.Limits{})
 	assembly, _ := lime.NewAssembler(r, lime.Limits{})
-	for _, e := range []lime.Envelope{{ID: "j", To: b.node, Type: "json", Stream: "start"}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`{"options":[1,2],"delete":true}`)}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`{"options":[3],"delete":null}`)}, {ID: "j", To: b.node, Stream: "end"}} {
+	for _, e := range []lime.Envelope{{ID: "j", To: b.node, Type: "json", Stream: "start"}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`[{"op":"add","path":"/options","value":[1,2]},{"op":"add","path":"/delete","value":true}]`)}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`[{"op":"add","path":"/options/-","value":3},{"op":"remove","path":"/delete"}]`)}, {ID: "j", To: b.node, Stream: "end"}} {
 		send(t, a, e)
 		received := receive(t, b)
 		result, err := assembly.Apply(received)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Complete && string(result.Message.Content) != `{"options":[3]}` {
+		if result.Complete && string(result.Message.Content) != `{"options":[1,2,3]}` {
 			t.Fatal(string(result.Message.Content))
 		}
 	}
@@ -350,7 +350,7 @@ func TestDemoStartupAndShutdown(t *testing.T) {
 func TestJSONStreamRetryWithClientPropertyOrder(t *testing.T) {
 	_, s := demo(t)
 	a, b := client(t, s), client(t, s)
-	for _, e := range []lime.Envelope{{ID: "j", To: b.node, Type: "json", Stream: "start"}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`{"text":"hello","options":[1]}`)}, {ID: "j", To: b.node, Stream: "end"}} {
+	for _, e := range []lime.Envelope{{ID: "j", To: b.node, Type: "json", Stream: "start"}, {ID: "j", To: b.node, Stream: "data", Content: []byte(`[{"op":"add","path":"/text","value":"hello"},{"op":"add","path":"/options","value":[1]}]`)}, {ID: "j", To: b.node, Stream: "end"}} {
 		send(t, a, e)
 		_ = receive(t, b)
 	}
@@ -488,8 +488,8 @@ func TestBroadcastRetryUsesEveryOriginalRecipient(t *testing.T) {
 		t.Fatal(response)
 	}
 	for _, e := range []lime.Envelope{
-		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`{"x":1,"delete":true}`)},
-		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`{"delete":null,"y":2}`)},
+		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`[{"op":"add","path":"/x","value":1},{"op":"add","path":"/delete","value":true}]`)},
+		{ID: "broadcast-retry", Rev: 2, Stream: "data", Content: []byte(`[{"op":"remove","path":"/delete"},{"op":"add","path":"/y","value":2}]`)},
 		{ID: "broadcast-retry", Rev: 2, Stream: "end"},
 	} {
 		send(t, a, e)

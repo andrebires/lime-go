@@ -27,6 +27,9 @@ import (
 //go:embed index.html
 var page []byte
 
+//go:embed json-patch.js
+var patchScript []byte
+
 //go:embed client.js
 var clientScript []byte
 
@@ -74,6 +77,10 @@ func newHub() *hub {
 func (h *hub) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.index)
+	mux.HandleFunc("/json-patch.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = w.Write(patchScript)
+	})
 	mux.HandleFunc("/client.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")

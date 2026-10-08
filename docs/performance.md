@@ -54,7 +54,23 @@ func BenchmarkBaselineDecodeText(b *testing.B) {
 }
 ```
 
-These results do not establish throughput for large JSON Merge Patches, network
-fanout, production persistence, battery consumption, or GC tail pauses. Patch
-application necessarily visits/serializes affected assembled JSON. Services should
+These results do not establish throughput for large JSON patches, network
+fanout, production persistence, battery consumption, or GC tail pauses. Structured streams retain an owned tree and serialize it only at completion. Services should
 benchmark representative payloads, batching and peer counts under their own limits.
+
+## JSON Patch array append, 2026-10-08
+
+Go 1.26.3, darwin/arm64, Apple M5 Pro; three repetitions, medians. Each row
+parses and applies one small RFC 6902 batch per item and serializes once at end.
+This measures the patch engine, not transport, schema validation or rendering.
+
+| Items | Time per document | Allocated bytes | Allocations |
+| --- | ---: | ---: | ---: |
+| 100 | 0.162 ms | 287,842 | 4,730 |
+| 1,000 | 1.645 ms | 2,858,467 | 47,043 |
+| 10,000 | 17.135 ms | 28,700,213 | 470,167 |
+
+The fixture grows approximately with item count and avoids reserializing prior
+items at each append. Per-batch JSON decoding still allocates; these totals are
+per complete document. Reproduce: `go test -run '^$' -bench BenchmarkJSONArrayAppend -benchmem -count=3 .`.
+Raw output is in [json-patch-benchmark.txt](json-patch-benchmark.txt).

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+const patchSource = fs.readFileSync(new URL("./json-patch.js", import.meta.url), "utf8");
 const source = fs.readFileSync(new URL("./client.js", import.meta.url), "utf8");
 class Element {
   constructor() {
@@ -107,6 +108,7 @@ function lab() {
     btoa: (s) => Buffer.from(s).toString("base64"),
     setTimeout: (fn) => timers.push(fn),
   });
+  vm.runInContext(patchSource, context, {filename: new URL("./json-patch.js", import.meta.url).pathname});
   vm.runInContext(source, context, {
     filename: new URL("./client.js", import.meta.url).pathname,
   });
@@ -244,28 +246,28 @@ test("receiving streaming, JSON patches, receipts, read and deduplication", asyn
     rev: 2,
     from: "bob",
     stream: "data",
-    content: { a: { b: 1, c: 2 }, items: [1, 2] },
+    content: [{op:"add",path:"/a",value:{b:1,c:2}},{op:"add",path:"/items",value:[1,2]}],
   });
   s.deliver({
     id: "json",
     rev: 2,
     from: "bob",
     stream: "data",
-    content: { a: { b: null }, items: [3] },
+    content: [{op:"remove",path:"/a/b"},{op:"add",path:"/items/-",value:3}],
   });
   s.deliver({ id: "json", rev: 2, from: "bob", stream: "end" });
   const value = JSON.parse(
     l.get("messages").children.at(-1).children[1].textContent,
   );
-  assert.deepEqual(value, { a: { c: 2 }, items: [3] });
+  assert.deepEqual(value, { a: { c: 2 }, items: [1,2,3] });
   assert.equal(s.sent.at(-1).rev, 2);
   s.deliver({ id: "scalar", from: "bob", type: "json", stream: "start" });
-  s.deliver({ id: "scalar", from: "bob", stream: "data", content: null });
+  s.deliver({ id: "scalar", from: "bob", stream: "data", content: [{op:"replace",path:"",value:null}] });
   s.deliver({
     id: "scalar",
     from: "bob",
     stream: "data",
-    content: { safe: true },
+    content: [{op:"replace",path:"",value:{safe:true}}],
   });
   s.deliver({ id: "scalar", from: "bob", stream: "end" });
   s.deliver({ id: "whole", from: "bob", type: "text", content: "atomic" });
@@ -352,15 +354,15 @@ test("JSON scalar patches, ID-less messages and streamed display bounds", async 
     id: "replace",
     from: "bob",
     stream: "data",
-    content: "initial scalar",
+    content: [{op:"replace",path:"",value:"initial scalar"}],
   });
   s.deliver({
     id: "replace",
     from: "bob",
     stream: "data",
-    content: { nested: true },
+    content: [{op:"replace",path:"",value:{nested:true}}],
   });
-  s.deliver({ id: "replace", from: "bob", stream: "data", content: [1, 2] });
+  s.deliver({ id: "replace", from: "bob", stream: "data", content: [{op:"replace",path:"",value:[1,2]}] });
   s.deliver({ id: "replace", from: "bob", stream: "end" });
   assert.deepEqual(
     JSON.parse(l.get("messages").children.at(-1).children[1].textContent),
@@ -771,4 +773,29 @@ test("confirmed delivery completion remains terminal across reordered status rep
   const count = s.sent.length;
   l.get("retry").onclick();
   assert.equal(s.sent.length, count);
+});
+
+
+test("browser patch engine matches shared vectors and rejects incomplete batches", async () => {
+  const vectors=JSON.parse(fs.readFileSync(new URL("../../testdata/json-patch-vectors.json",import.meta.url),"utf8"));
+  const l=lab();
+  for(const v of vectors){
+    const run=()=>vm.runInContext(`(()=>{
+      const d=new LimeJsonPatch.default(LimeJsonPatch.copyJsonValue,64,1048576);
+      d.apply([{op:"add",path:"",value:${JSON.stringify(v.target)}}],256,1048576);
+      d.apply(${JSON.stringify(v.patch)},256,1048576);
+      if(d.value===undefined)throw new Error("Missing root");
+      return JSON.stringify(d.value);
+    })()`,l.context);
+    if(v.error)assert.throws(run,v.name);else assert.deepEqual(JSON.parse(run()),v.expected,v.name);
+  }
+  const s=await l.connect();
+  for(const [id,patch] of [["bad",[{op:"add",path:"/x",value:1},{op:"remove",path:"/absent"}]],["root",[{op:"remove",path:""}]]]){
+    s.deliver({id,from:"bob",type:"json",stream:"start"});s.deliver({id,from:"bob",stream:"data",content:patch});s.deliver({id,from:"bob",stream:"end"});
+    assert.ok(!s.sent.some(e=>e.event==="received"&&e.id===id));
+  }
+  s.deliver({id:"large",from:"bob",type:"json",stream:"start"});
+  s.deliver({id:"large",from:"bob",stream:"data",content:[{op:"add",path:"/x",value:"x".repeat(1048576)}]});
+  assert.match(l.get("state").textContent,/Rejected JSON patch/);
+  s.close();
 });

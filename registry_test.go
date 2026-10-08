@@ -140,7 +140,7 @@ func TestVendorTypesRequireSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	apply(t, a, `{"id":"s","type":"select","stream":"start"}`)
-	apply(t, a, `{"id":"s","stream":"data","content":{"options":["A"]}}`)
+	apply(t, a, `{"id":"s","stream":"data","content":[{"op":"add","path":"/options","value":["A"]}]}`)
 	if result := apply(t, a, `{"id":"s","stream":"end"}`); !result.Complete {
 		t.Fatal("schema-supported stream failed")
 	}
