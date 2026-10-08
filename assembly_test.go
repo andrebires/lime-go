@@ -1,7 +1,6 @@
 package lime
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -91,11 +90,11 @@ func TestStreamLifecycle(t *testing.T) {
 }
 func TestJSONStreamingFreshRevision(t *testing.T) {
 	a := assembler(t, Limits{})
-	for _, s := range []string{`{"id":"j","type":"json","stream":"start"}`, `{"id":"j","stream":"data","content":{"a":{"b":1,"c":2},"options":[1,2]}}`, `{"id":"j","stream":"data","content":{"a":{"b":null},"options":[3]}}`} {
+	for _, s := range []string{`{"id":"j","type":"json","stream":"start"}`, `{"id":"j","stream":"data","content":[{"op":"add","path":"/a","value":{"b":1,"c":2}},{"op":"add","path":"/options","value":[1,2]}]}`, `{"id":"j","stream":"data","content":[{"op":"remove","path":"/a/b"},{"op":"add","path":"/options/-","value":3},{"op":"add","path":"/null","value":null}]}`} {
 		apply(t, a, s)
 	}
 	r := apply(t, a, `{"id":"j","stream":"end"}`)
-	if string(r.Message.Content) != `{"a":{"c":2},"options":[3]}` {
+	if string(r.Message.Content) != `{"a":{"c":2},"null":null,"options":[1,2,3]}` {
 		t.Fatal(string(r.Message.Content))
 	}
 	apply(t, a, `{"id":"j","rev":2,"type":"json","stream":"start"}`)
@@ -104,7 +103,7 @@ func TestJSONStreamingFreshRevision(t *testing.T) {
 		t.Fatal("revision inherited previous content")
 	}
 	apply(t, a, `{"id":"scalar","type":"json","stream":"start"}`)
-	apply(t, a, `{"id":"scalar","stream":"data","content":null}`)
+	apply(t, a, `{"id":"scalar","stream":"data","content":[{"op":"replace","path":"","value":null}]}`)
 	r = apply(t, a, `{"id":"scalar","stream":"end"}`)
 	if string(r.Message.Content) != `null` {
 		t.Fatal("null changed")
@@ -177,38 +176,6 @@ func TestAssemblerFailures(t *testing.T) {
 		t.Fatal("negative")
 	}
 }
-func TestRFC7396Vectors(t *testing.T) {
-	vectors := [][3]string{
-		{`{"a":"b"}`, `{"a":"c"}`, `{"a":"c"}`}, {`{"a":"b"}`, `{"b":"c"}`, `{"a":"b","b":"c"}`},
-		{`{"a":"b"}`, `{"a":null}`, `{}`}, {`{"a":"b","b":"c"}`, `{"a":null}`, `{"b":"c"}`},
-		{`{"a":["b"]}`, `{"a":"c"}`, `{"a":"c"}`}, {`{"a":"c"}`, `{"a":["b"]}`, `{"a":["b"]}`},
-		{`{"a":{"b":"c"}}`, `{"a":{"b":"d","c":null}}`, `{"a":{"b":"d"}}`},
-		{`{"a":[{"b":"c"}]}`, `{"a":[1]}`, `{"a":[1]}`},
-		{`["a","b"]`, `["c","d"]`, `["c","d"]`}, {`{"a":"b"}`, `["c"]`, `["c"]`},
-		{`{"a":"foo"}`, `null`, `null`}, {`{"a":"foo"}`, `"bar"`, `"bar"`},
-		{`{"e":null}`, `{"a":1}`, `{"a":1,"e":null}`}, {`[1,2]`, `{"a":"b","c":null}`, `{"a":"b"}`},
-		{`{}`, `{"a":{"bb":{"ccc":null}}}`, `{"a":{"bb":{}}}`},
-		{`{}`, `{"n":9007199254740993123456789}`, `{"n":9007199254740993123456789}`},
-	}
-	for _, v := range vectors {
-		out, err := MergePatch([]byte(v[0]), []byte(v[1]))
-		if err != nil || !bytes.Equal(out, []byte(v[2])) {
-			t.Fatal(v, string(out), err)
-		}
-	}
-	for _, v := range [][2]string{{`bad`, `{}`}, {`{}`, `bad`}, {`{}`, `{"a":1,"a":2}`}} {
-		if _, err := MergePatch([]byte(v[0]), []byte(v[1])); err == nil {
-			t.Fatal("invalid merge")
-		}
-	}
-	target := json.RawMessage(`{"a":1}`)
-	out, _ := MergePatch(target, []byte(`[1]`))
-	out[0] = 'x'
-	if string(target) != `{"a":1}` {
-		t.Fatal("alias")
-	}
-}
-
 func TestProgressReturnsContribution(t *testing.T) {
 	a := assembler(t, Limits{})
 	apply(t, a, `{"id":"m","type":"text","stream":"start"}`)
@@ -258,7 +225,7 @@ func TestTextEscapesAndChunkOwnership(t *testing.T) {
 func TestRetryJSONValueEquality(t *testing.T) {
 	a := assembler(t, Limits{})
 	apply(t, a, `{"id":"j","type":"json","stream":"start"}`)
-	apply(t, a, `{"id":"j","stream":"data","content":{"text":"Choose <topic>","options":["Payments"],"n":9007199254740993123}}`)
+	apply(t, a, `{"id":"j","stream":"data","content":[{"op":"add","path":"","value":{"text":"Choose <topic>","options":["Payments"],"n":9007199254740993123}}]}`)
 	apply(t, a, `{"id":"j","stream":"end"}`)
 	retry := apply(t, a, `{"id":"j","type":"json","content":{"text":"Choose <topic>", "n":9007199254740993123,"options":["Payments"]}}`)
 	if !retry.Duplicate {

@@ -69,25 +69,6 @@ function request(uri, method = "get", resource) {
   }
   send(e);
 }
-function patch(target, p) {
-  if (p === null || typeof p !== "object" || Array.isArray(p))
-    return structuredClone(p);
-  const out =
-    target !== null && typeof target === "object" && !Array.isArray(target)
-      ? structuredClone(target)
-      : {};
-  for (const [k, v] of Object.entries(p)) {
-    if (v === null) delete out[k];
-    else
-      Object.defineProperty(out, k, {
-        value: patch(out[k], v),
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-  }
-  return out;
-}
 function render(e, value, done) {
   const k = key(e);
   let el = e.id ? complete.get(k)?.element || active.get(k)?.element : null;
@@ -331,6 +312,7 @@ function handle(e) {
   if (e.stream === "start") {
     const item = {
       message: e,
+      patchDocument: new LimeJsonPatch.default(LimeJsonPatch.copyJsonValue, 64, 1048576),
       value:
         e.type === "text" || e.type === "text/plain" || e.type === "note"
           ? ""
@@ -346,12 +328,20 @@ function handle(e) {
       status("Rejected data without start");
       return;
     }
-    item.value =
-      item.message.type === "text" ||
-      item.message.type === "text/plain" ||
-      item.message.type === "note"
-        ? item.value + e.content
-        : patch(item.value, e.content);
+    try {
+      if (item.message.type === "text" || item.message.type === "text/plain" || item.message.type === "note") item.value += e.content;
+      else {
+        const bytes = LimeJsonPatch.jsonBytes(e.content);
+        if (bytes > 1048576) throw new Error("JSON contribution limit exceeded");
+        item.patchDocument.apply(LimeJsonPatch.copyJsonValue(e.content, 66), 256, 1048576);
+        item.value = item.patchDocument.value;
+      }
+    } catch (error) {
+      active.delete(k);
+      item.element.remove();
+      status("Rejected JSON patch: " + error.message);
+      return;
+    }
     item.element = render(item.message, item.value, false);
     return;
   }
@@ -360,6 +350,9 @@ function handle(e) {
     if (!item) {
       status("Rejected end without start");
       return;
+    }
+    if (item.value === undefined) {
+      active.delete(k); item.element.remove(); status("Rejected missing JSON root"); return;
     }
     const msg = { ...item.message, content: item.value };
     delete msg.stream;
@@ -500,11 +493,11 @@ $("json").onclick = () => {
     id,
     to: e.to,
     stream: "data",
-    content: {
-      text: "Choose a topic",
-      options: ["Delivery", "Returns"],
-      temporary: true,
-    },
+    content: [
+      { op: "add", path: "/text", value: "Choose a topic" },
+      { op: "add", path: "/options", value: ["Delivery", "Returns"] },
+      { op: "add", path: "/temporary", value: true },
+    ],
   });
   setTimeout(() => {
     if (ws !== connection || ws?.readyState !== WebSocket.OPEN) return;
@@ -512,14 +505,14 @@ $("json").onclick = () => {
       id,
       to: e.to,
       stream: "data",
-      content: { options: ["Payments"], temporary: null },
+      content: [{ op: "add", path: "/options/-", value: "Payments" }, { op: "remove", path: "/temporary" }],
     });
     send({ id, to: e.to, stream: "end" });
     rememberSent(
       {
         ...e,
         type: "json",
-        content: { text: "Choose a topic", options: ["Payments"] },
+        content: { text: "Choose a topic", options: ["Delivery", "Returns", "Payments"] },
       },
       true,
     );

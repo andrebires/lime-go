@@ -1,6 +1,6 @@
 # ADR 0001: LIME 2.0 implementation profile
 
-- Status: Accepted
+- Status: Superseded by [ADR 0002](0002-json-patch-streaming.md)
 - Date: 2026-10-07
 - Task: LIME2-T01
 - Authority: explicit user implementation request and approval of profile choices.

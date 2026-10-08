@@ -18,7 +18,7 @@ func identity(e Envelope) key { return key{e.From, e.ID, e.Revision()} }
 type assembly struct {
 	start  Envelope
 	text   []byte
-	value  json.RawMessage
+	value  *patchDocument
 	chunks int
 }
 
@@ -97,7 +97,14 @@ func (a *Assembler) Apply(e Envelope) (Result, error) {
 		if err := a.registry.Streamable(t); err != nil {
 			return Result{}, err
 		}
-		a.active[id] = &assembly{start: clone(e), value: json.RawMessage(`{}`)}
+		var document *patchDocument
+		if t != "text/plain" {
+			document, err = newPatchDocument([]byte(`{}`), a.limits.ContentBytes)
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		a.active[id] = &assembly{start: clone(e), value: document}
 		return Result{Message: clone(e)}, nil
 	case "data", "end":
 		current, ok := a.active[id]
@@ -113,7 +120,11 @@ func (a *Assembler) Apply(e Envelope) (Result, error) {
 			if complete.Type == "text/plain" {
 				complete.Content = quote(nil, string(current.text))
 			} else {
-				complete.Content = current.value
+				value, err := current.value.finish()
+				if err != nil {
+					return fail(err)
+				}
+				complete.Content = value
 			}
 			delete(a.active, id)
 			return a.finish(complete)
@@ -147,14 +158,9 @@ func (a *Assembler) Apply(e Envelope) (Result, error) {
 			return Result{Message: e}, nil
 		}
 
-		value, err := MergePatch(current.value, e.Content)
-		if err != nil {
+		if err := current.value.apply(e.Content, a.limits.Entries); err != nil {
 			return fail(err)
 		}
-		if len(value) > a.limits.ContentBytes {
-			return fail(errors.New("assembled JSON limit exceeded"))
-		}
-		current.value = value
 		e.Type = current.start.Type
 		e.To = current.start.To
 		e.Thread = current.start.Thread
@@ -241,55 +247,4 @@ func clone(e Envelope) Envelope {
 		e.Reason = &r
 	}
 	return e
-}
-
-// MergePatch implements RFC 7396 and preserves exact numeric literals. Arrays and
-// scalars replace; null object members delete. Inputs and output do not alias.
-func MergePatch(target, patch []byte) (json.RawMessage, error) {
-	if err := strictJSON(target); err != nil {
-		return nil, err
-	}
-	if err := strictJSON(patch); err != nil {
-		return nil, err
-	}
-	out, err := merge(target, patch, 0)
-	if err != nil {
-		return nil, err
-	}
-	if err = strictJSON(out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-func merge(target, patch []byte, depth int) (json.RawMessage, error) {
-	if depth > MaxDepth {
-		return nil, errors.New("merge depth exceeded")
-	}
-	patch = bytes.TrimSpace(patch)
-	if patch[0] != '{' {
-		return bytes.Clone(patch), nil
-	}
-	var p map[string]json.RawMessage
-	_ = json.Unmarshal(patch, &p)
-	t := make(map[string]json.RawMessage)
-	target = bytes.TrimSpace(target)
-	if target[0] == '{' {
-		_ = json.Unmarshal(target, &t)
-	}
-	for name, value := range p {
-		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			delete(t, name)
-			continue
-		}
-		old := t[name]
-		if old == nil {
-			old = json.RawMessage(`null`)
-		}
-		merged, err := merge(old, value, depth+1)
-		if err != nil {
-			return nil, err
-		}
-		t[name] = merged
-	}
-	return json.Marshal(t)
 }

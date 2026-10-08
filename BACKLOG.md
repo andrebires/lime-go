@@ -1,4 +1,19 @@
+## LIME2-T04 — Adopt RFC 6902 structured streaming
+
+- Status: Completed
+- Authority: user selection, 2026-10-08; superseding ADR 0002.
+- Outcome: all six JSON Patch operations, efficient incremental array updates,
+  literal null, strict pointers/indices, bounded document/depth/operations/copy work,
+  no partial completion on rejection, and compatible Go/browser contract vectors.
+- Acceptance: shared RFC fixtures, invalid/ownership/replay contracts, demo updated,
+  full formatting/vet/race/build/frontend verification and >=90% changed coverage;
+  array-append benchmarks and browser verification.
+- Scope: message assembly and the existing demo. Command streaming remains outside
+  this implementation; no new negotiation grammar or persistence.
+
 # Implementation backlog
+
+- Evidence: full verification passes with 576/607 changed executable lines (94.89%); Go package coverage 97.2%, demo 93.2%; browser 99.59% lines / 100% functions / 94.27% branches. All 74 shared vectors pass; fuzzing completed 299,106 cases. Two live browser clients verified append, removal, end and final receipt with no console errors; [evidence](docs/demo-json-patch.png). Array benchmarks are recorded in docs/performance.md.
 
 ## LIME2-T03 — Address PR review and merge verified implementation
 

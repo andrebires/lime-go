@@ -1,4 +1,4 @@
-// Package lime implements the experimental LIME 2.0 JSON profile in docs/adr/0001-lime2-profile.md.
+// Package lime implements the experimental LIME 2.0 JSON profile in docs/adr/0002-json-patch-streaming.md.
 // It has no global registries. Connections, assemblers and trackers own their state.
 package lime
 

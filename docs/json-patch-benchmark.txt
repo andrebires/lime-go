@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/andrebires/lime-go/v2
+cpu: Apple M5 Pro
+BenchmarkJSONArrayAppend/100-18         	    7398	    160235 ns/op	  287842 B/op	    4729 allocs/op
+BenchmarkJSONArrayAppend/100-18         	    7650	    161833 ns/op	  287842 B/op	    4730 allocs/op
+BenchmarkJSONArrayAppend/100-18         	    7700	    163106 ns/op	  287846 B/op	    4730 allocs/op
+BenchmarkJSONArrayAppend/1000-18        	     595	   1683375 ns/op	 2858459 B/op	   47043 allocs/op
+BenchmarkJSONArrayAppend/1000-18        	     742	   1623319 ns/op	 2858467 B/op	   47043 allocs/op
+BenchmarkJSONArrayAppend/1000-18        	     732	   1645070 ns/op	 2858473 B/op	   47043 allocs/op
+BenchmarkJSONArrayAppend/10000-18       	      69	  17135415 ns/op	28700662 B/op	  470169 allocs/op
+BenchmarkJSONArrayAppend/10000-18       	      69	  17037597 ns/op	28700195 B/op	  470167 allocs/op
+BenchmarkJSONArrayAppend/10000-18       	      69	  17266905 ns/op	28700213 B/op	  470167 allocs/op
+PASS
+ok  	github.com/andrebires/lime-go/v2	11.024s
