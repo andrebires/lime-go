@@ -752,3 +752,32 @@ func TestCanceledRetryRetainsDeliveryAndClosesFailedTransport(t *testing.T) {
 		t.Fatal("cancellation acknowledged delivery", nodes)
 	}
 }
+
+func TestStreamedAliasCommandDoesNotExecuteBeforeEnd(t *testing.T) {
+	_, s := demo(t)
+	a := client(t, s)
+	send(t, a, lime.Envelope{ID: "register", Method: "set", URI: lime.AliasURI, Type: "json", Stream: "start"})
+	send(t, a, lime.Envelope{ID: "register", Method: "set", Stream: "data", Resource: []byte(`[{"op":"add","path":"/plain","value":"text/plain"}]`)})
+	send(t, a, lime.Envelope{ID: "before", Method: "get", URI: lime.AliasURI})
+	before := receive(t, a)
+	if before.ID != "before" || strings.Contains(string(before.Resource), "plain") {
+		t.Fatal("partial request executed", before)
+	}
+	send(t, a, lime.Envelope{ID: "register", Method: "set", Stream: "end"})
+	if r := receive(t, a); r.ID != "register" || r.Status != "success" {
+		t.Fatal(r)
+	}
+	send(t, a, lime.Envelope{ID: "after", Method: "get", URI: lime.AliasURI})
+	if r := receive(t, a); !strings.Contains(string(r.Resource), "plain") {
+		t.Fatal("completed request missing", r)
+	}
+	send(t, a, lime.Envelope{ID: "bad", Method: "set", URI: lime.AliasURI, Type: "json", Stream: "start"})
+	send(t, a, lime.Envelope{ID: "bad", Method: "set", Stream: "data", Resource: []byte(`[{"op":"remove","path":"/absent"}]`)})
+	if r := receive(t, a); r.Status != "failure" || r.ID != "bad" {
+		t.Fatal(r)
+	}
+	send(t, a, lime.Envelope{ID: "bad", Method: "set", Stream: "end"})
+	if r := receive(t, a); r.Status != "failure" {
+		t.Fatal("failed input invoked", r)
+	}
+}

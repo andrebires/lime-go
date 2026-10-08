@@ -74,3 +74,15 @@ The fixture grows approximately with item count and avoids reserializing prior
 items at each append. Per-batch JSON decoding still allocates; these totals are
 per complete document. Reproduce: `go test -run '^$' -bench BenchmarkJSONArrayAppend -benchmem -count=3 .`.
 Raw output is in [json-patch-benchmark.txt](json-patch-benchmark.txt).
+
+## Command streaming, 2026-10-08
+
+BenchmarkCommandTextStream measures one 100-contribution request (500 decoded
+characters), final assembly/schema validation, and a complete reply releasing
+its exchange. Three Go benchmark repetitions on Apple M5 Pro, darwin/arm64,
+Go 1.26.3: median 17,438 ns/document, 3,522 B and 18 allocations/document. Raw
+output is in [command-stream-benchmark.txt](command-stream-benchmark.txt).
+It includes no WebSocket I/O, application authorization or execution. Contributions
+borrow decoded input bytes for progress; text is accumulated once and quoted at
+end, so this fixture's allocation count is per document, not per chunk.
+Reproduce with go test -run '^$' -bench '^BenchmarkCommandTextStream$' -benchmem -count=3 .

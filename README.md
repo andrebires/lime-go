@@ -2,7 +2,8 @@
 
 An experimental, non-binary LIME 2.0 stack based on the
 [2026-10-08 v0.1 draft](docs/lime-2-v0.1-draft.md) and the
-[approved JSON Patch profile](docs/adr/0002-json-patch-streaming.md).
+[approved JSON Patch profile](docs/adr/0002-json-patch-streaming.md), with
+[command streaming](docs/adr/0003-command-streaming.md).
 The wire remains readable JSON over WebSocket text messages (`lime` subprotocol).
 
 This is a **breaking rewrite**. Import `github.com/andrebires/lime-go/v2`.
@@ -167,3 +168,57 @@ same gate and does not automatically tag/release this experimental protocol.
 See [benchmark evidence](docs/performance.md), [the implementation task](BACKLOG.md),
 and [browser verification](docs/demo-browser.jpg). Microbenchmarks are codec
 measurements, not production end-to-end latency or GC pause guarantees.
+
+## Command streams
+
+The profile supports text and RFC 6902 JSON Patch requests and responses using
+id/method on every frame and resource on data. Request start includes URI/type;
+response start includes type and omits URI/status. Request end submits the input;
+response end declares success/failure, with reason for failure. Commands never
+enter message receipts, revisions, deduplication or retry buffers.
+
+```go
+commands, err := lime.NewCommandAssembler(registry, lime.Limits{})
+if err != nil { return err }
+defer commands.Reset() // one object per endpoint/session, used serially
+request := lime.Envelope{ID:"c", From:local, To:remote, Method:"set",
+    URI:"/preferences", Type:"json", Stream:"start"}
+if _, err = commands.Apply(request, lime.OutgoingCommand); err != nil { return err }
+if err = c.Send(ctx, request); err != nil {
+    commands.Discard(request, lime.OutgoingCommand)
+    return err
+}
+// Send data/end through Apply(OutgoingCommand) before c.Send, then receive:
+envelope, err := c.Receive(ctx)
+if err != nil {
+    commands.Discard(request, lime.OutgoingCommand)
+    return err // timeout after submission leaves execution unconfirmed
+}
+result, err := commands.Apply(envelope, lime.IncomingCommand)
+if err != nil { return err }
+if result.Complete && result.Response { return handleResult(result.Command) }
+```
+
+Bind omitted from/to fields to authenticated session routing before Apply. A
+response stream must match a submitted outgoing request by peer, ID and method.
+A received request becomes invokable only when Complete is true and Response is
+false. Apply outgoing responses as well to release the remote command ID at end.
+A complete ordinary failure can reject incomplete input; once a response stream
+starts, use failure end. Failed result streams return status/reason and omit
+partial type/resource. Complete requests and responses remain independently usable.
+
+Limits apply to active exchanges (Entries), active payload streams (Streams),
+contributions/operations (Entries), resource bytes, JSON depth and copy work.
+Active reports reserved exchanges; even completed incoming requests await a
+terminal outgoing response. Discard releases an exchange on rejection, timeout
+or failed send; Reset abandons all state on disconnect. Callers own absolute
+context deadlines and receive-loop dispatch; progress must not renew deadlines.
+No command goroutines or automatic retries are created. Use fresh IDs per
+invocation to avoid delayed-frame ambiguity after completed-ID reuse. Data results
+borrow the input contribution bytes, while complete resources own their bytes.
+
+The existing demo server now assembles streamed requests before alias/delivery/
+peer handlers execute and returns complete responses. Its browser controls use
+ordinary complete commands; bidirectional response streams are verified through
+the library's WebSocket and shared-fixture tests. Capability/abort wire fields
+remain undefined; support in both directions is a profile convention.
